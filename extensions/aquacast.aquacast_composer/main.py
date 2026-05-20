@@ -7,10 +7,16 @@ import sys
 import time
 from pathlib import Path
 
-import carb
-import omni.kit.app
-import omni.usd
-from pxr import Gf, Usd, UsdGeom
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+import fish_dynamics  # noqa: E402
+
+import carb  # noqa: E402
+import omni.kit.app  # noqa: E402
+import omni.usd  # noqa: E402
+from pxr import Gf, Usd, UsdGeom  # noqa: E402
 
 _stage_structure_cache = None
 _fish_swim_controller = None
@@ -202,6 +208,31 @@ def _local_direction_to_rotate_xyz(direction):
     return Gf.Vec3f(0.0, float(pitch), float(yaw))
 
 
+def _compute_orientation(direction, fish, prev_direction, dt):
+    direction = _normalized(direction)
+    horizontal = math.sqrt(direction[0] * direction[0] + direction[1] * direction[1])
+    yaw = math.degrees(math.atan2(-direction[1], -direction[0]))
+    pitch = math.degrees(math.atan2(direction[2], max(horizontal, 1e-6)))
+
+    cur_yaw = fish_dynamics.yaw_from_direction(direction[0], direction[1])
+    prev_yaw = fish_dynamics.yaw_from_direction(prev_direction[0], prev_direction[1])
+    yaw_delta = fish_dynamics.wrap_to_pi(cur_yaw - prev_yaw)
+    yaw_rate = yaw_delta / max(dt, 1e-4)
+
+    target_roll = fish_dynamics.compute_target_roll(
+        yaw_rate=yaw_rate,
+        bank_gain=fish.get("bank_gain", 0.0),
+        bank_gain_global=float(get_global_config("FISH_BANK_GAIN_GLOBAL", 0.35)),
+        max_bank_radians=float(get_global_config("FISH_MAX_BANK_RADIANS", 0.6)),
+    )
+    bank_lerp = _lerp_alpha(float(get_global_config("FISH_BANK_LERP_RATE", 3.0)), dt)
+    current_roll = float(fish.get("roll", 0.0))
+    new_roll = current_roll + (target_roll - current_roll) * bank_lerp
+    fish["roll"] = new_roll
+
+    return Gf.Vec3f(float(math.degrees(new_roll)), float(pitch), float(yaw))
+
+
 def _set_compatible_fish_xform_order(xformable, translate_op, rotate_op):
     ordered_ops = xformable.GetOrderedXformOps()
     scale_ops = []
@@ -248,7 +279,7 @@ def _world_to_parent_local_direction(prim, world_direction):
     return _normalized(endpoint - origin, world_direction)
 
 
-def _set_fish_transform(prim, position, direction):
+def _set_fish_transform(prim, position, direction, *, fish=None, dt=None, realism_on=False):
     stage = prim.GetStage()
     previous_edit_target = stage.GetEditTarget() if stage else None
     if stage and stage.GetSessionLayer():
@@ -266,7 +297,12 @@ def _set_fish_transform(prim, position, direction):
             rotate_op = xformable.AddRotateXYZOp(precision=UsdGeom.XformOp.PrecisionFloat)
         _set_compatible_fish_xform_order(xformable, translate_op, rotate_op)
         local_direction = _world_to_parent_local_direction(prim, direction)
-        rotate_op.Set(_local_direction_to_rotate_xyz(local_direction))
+        if realism_on and fish is not None and dt is not None:
+            prev_direction = fish.get("prev_direction", direction)
+            local_prev = _world_to_parent_local_direction(prim, prev_direction)
+            rotate_op.Set(_compute_orientation(local_direction, fish, local_prev, dt))
+        else:
+            rotate_op.Set(_local_direction_to_rotate_xyz(local_direction))
     finally:
         if stage and previous_edit_target is not None:
             stage.SetEditTarget(previous_edit_target)
@@ -441,12 +477,30 @@ class FishSwimController:
                 fish.append(prim)
         return sorted(fish, key=lambda prim: prim.GetName())
 
+    def _get_trait_ranges(self):
+        return {
+            "cruise_speed_scale": tuple(get_global_config(
+                "FISH_CRUISE_SPEED_SCALE_RANGE", (0.85, 1.15))),
+            "speed_noise_amplitude": tuple(get_global_config(
+                "FISH_SPEED_NOISE_AMPLITUDE_RANGE", (0.15, 0.35))),
+            "speed_noise_freq_hz": tuple(get_global_config(
+                "FISH_SPEED_NOISE_FREQ_HZ_RANGE", (0.05, 0.12))),
+            "depth_band_center_norm": tuple(get_global_config(
+                "FISH_DEPTH_BAND_CENTER_NORM_RANGE", (0.15, 0.85))),
+            "depth_band_half_width_norm": tuple(get_global_config(
+                "FISH_DEPTH_BAND_HALF_WIDTH_NORM_RANGE", (0.08, 0.18))),
+            "vertical_wander_freq_hz": tuple(get_global_config(
+                "FISH_VERTICAL_WANDER_FREQ_HZ_RANGE", (0.07, 0.18))),
+            "bank_gain": tuple(get_global_config(
+                "FISH_BANK_GAIN_RANGE", (0.6, 1.0))),
+        }
+
     def _make_fish_state(self, prim, index):
         animation_prim = _get_animation_target_prim(prim)
         position = _xform_translation(animation_prim)
         angle = index * math.tau / max(1, 3)
         initial_direction = _normalized(Gf.Vec3d(-math.cos(angle), -math.sin(angle), 0.08 * math.sin(index + 1)))
-        return {
+        state = {
             "root_prim": prim,
             "prim": animation_prim,
             "position": self._clamp_position(position, initial_direction),
@@ -454,7 +508,23 @@ class FishSwimController:
             "target_direction": initial_direction,
             "phase": index * 1.618,
             "head_length": self._estimate_head_length(animation_prim),
+            "prev_direction": initial_direction,
+            "roll": 0.0,
         }
+
+        if bool(get_global_config("ENABLE_REALISM_DYNAMICS", True)):
+            traits = fish_dynamics.sample_fish_traits(
+                prim_name=prim.GetName(),
+                base_seed=int(get_global_config("FISH_RNG_BASE_SEED", 1)),
+                ranges=self._get_trait_ranges(),
+            )
+            state.update(traits)
+
+            water_height = max(1e-6, self._water_max_z - self._water_min_z)
+            state["preferred_z"] = self._water_min_z + water_height * state["depth_band_center_norm"]
+            state["band_half"] = water_height * state["depth_band_half_width_norm"]
+
+        return state
 
     def _estimate_head_length(self, prim):
         try:
@@ -486,20 +556,43 @@ class FishSwimController:
         if dt <= 0.0:
             return
 
-        speed = self._water_radius * float(get_global_config("FISH_SWIM_SPEED_RADIUS_PER_SECOND", 0.12))
+        realism_on = bool(get_global_config("ENABLE_REALISM_DYNAMICS", True))
+        base_speed = self._water_radius * float(get_global_config("FISH_SWIM_SPEED_RADIUS_PER_SECOND", 0.12))
+        min_speed_fraction = float(get_global_config("FISH_MIN_SPEED_FRACTION", 0.4))
         direction_lerp_rate = float(get_global_config("FISH_DIRECTION_LERP_RATE", 4.0))
         direction_lerp_t = _lerp_alpha(direction_lerp_rate, dt)
         max_turn = float(get_global_config("FISH_MAX_TURN_RADIANS_PER_SECOND", 1.8)) * dt
 
         for fish in self._fish:
-            desired = self._desired_direction(fish, now)
+            desired = self._desired_direction(fish, now, realism_on)
             fish["target_direction"] = _lerp_direction(fish["target_direction"], desired, direction_lerp_t)
+            fish["prev_direction"] = fish["direction"]
             fish["direction"] = _rotate_toward(fish["direction"], fish["target_direction"], max_turn)
+
+            if realism_on and "speed_noise_amplitude" in fish:
+                speed_factor = fish_dynamics.intrinsic_speed_factor(
+                    now=now,
+                    amplitude=fish["speed_noise_amplitude"],
+                    freq_hz=fish["speed_noise_freq_hz"],
+                    phase=fish["speed_noise_phase"],
+                    min_fraction=min_speed_fraction,
+                )
+                speed = base_speed * fish["cruise_speed_scale"] * speed_factor
+            else:
+                speed = base_speed
+
             next_position = fish["position"] + fish["direction"] * speed * dt
             fish["position"] = self._clamp_position(next_position, fish["direction"], fish["head_length"])
-            _set_fish_transform(fish["prim"], fish["position"], fish["direction"])
+            _set_fish_transform(
+                fish["prim"],
+                fish["position"],
+                fish["direction"],
+                fish=fish,
+                dt=dt,
+                realism_on=realism_on,
+            )
 
-    def _desired_direction(self, fish, now):
+    def _desired_direction(self, fish, now, realism_on=True):
         position = fish["position"]
         direction = fish["direction"]
 
@@ -530,14 +623,30 @@ class FishSwimController:
             flock += alignment * float(get_global_config("FISH_ALIGNMENT_WEIGHT", 0.25))
             flock += separation * float(get_global_config("FISH_SEPARATION_WEIGHT", 0.42))
 
-        wander = self._wander_vector(fish, now) * float(get_global_config("FISH_WANDER_WEIGHT", 0.20))
+        wander = self._wander_vector(fish, now, realism_on) * float(get_global_config("FISH_WANDER_WEIGHT", 0.20))
         boundary = self._boundary_steering(fish) * float(get_global_config("FISH_BOUNDARY_WEIGHT", 1.35))
-        return _normalized(direction + flock + wander + boundary, direction)
 
-    def _wander_vector(self, fish, now):
+        depth = Gf.Vec3d(0.0, 0.0, 0.0)
+        if realism_on and "preferred_z" in fish:
+            strength = fish_dynamics.depth_attraction_strength(
+                position_z=fish["position"][2],
+                preferred_z=fish["preferred_z"],
+                band_half=fish["band_half"],
+            )
+            depth = Gf.Vec3d(0.0, 0.0, strength) * float(get_global_config("FISH_DEPTH_BAND_WEIGHT", 0.45))
+
+        return _normalized(direction + flock + wander + boundary + depth, direction)
+
+    def _wander_vector(self, fish, now, realism_on=True):
         phase = fish["phase"]
         horizontal = Gf.Vec3d(math.cos(now * 0.7 + phase), math.sin(now * 0.9 + phase * 1.7), 0.0)
-        vertical = Gf.Vec3d(0.0, 0.0, math.sin(now * 0.55 + phase))
+        if realism_on and "vertical_wander_freq_hz" in fish:
+            vertical_z = math.sin(
+                2.0 * math.pi * fish["vertical_wander_freq_hz"] * now + fish["vertical_wander_phase"]
+            )
+        else:
+            vertical_z = math.sin(now * 0.55 + phase)
+        vertical = Gf.Vec3d(0.0, 0.0, vertical_z)
         return _normalized(horizontal + vertical * float(get_global_config("FISH_VERTICAL_WANDER_WEIGHT", 0.12)))
 
     def _boundary_steering(self, fish):

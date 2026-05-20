@@ -664,52 +664,86 @@
           ]
         },
         {
-          "name": "FishTanks",
-          "path": "/Root/FishTanks",
+          "name": "Aquarium",
+          "path": "/Root/Aquarium",
           "children": [
             {
-              "name": "Contents",
-              "path": "/Root/FishTanks/Contents",
+              "name": "AquariumComponents",
+              "path": "/Root/Aquarium/AquariumComponents",
               "children": [
                 {
-                  "name": "Tank",
-                  "path": "/Root/FishTanks/Contents/Tank",
+                  "name": "FishTank",
+                  "path": "/Root/Aquarium/AquariumComponents/FishTank",
                   "children": [
                     {
                       "name": "inlet",
-                      "path": "/Root/FishTanks/Contents/Tank/inlet",
+                      "path": "/Root/Aquarium/AquariumComponents/FishTank/inlet",
                       "children": [
                         {
                           "name": "Cylinder_01",
-                          "path": "/Root/FishTanks/Contents/Tank/inlet/Cylinder_01",
+                          "path": "/Root/Aquarium/AquariumComponents/FishTank/inlet/Cylinder_01",
                           "children": []
                         },
                         {
                           "name": "Inlet_Trace_Source",
-                          "path": "/Root/FishTanks/Contents/Tank/inlet/Inlet_Trace_Source",
+                          "path": "/Root/Aquarium/AquariumComponents/FishTank/inlet/Inlet_Trace_Source",
                           "children": []
                         }
                       ]
                     },
                     {
+                      "name": "Feedings",
+                      "path": "/Root/Aquarium/AquariumComponents/FishTank/Feedings",
+                      "children": [
+                        {
+                          "name": "Mesh448",
+                          "path": "/Root/Aquarium/AquariumComponents/FishTank/Feedings/Mesh448",
+                          "children": [
+                            {
+                              "name": "Mesh448_blue_tanks_0",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/Feedings/Mesh448/Mesh448_blue_tanks_0",
+                              "children": [
+                                {
+                                  "name": "Mesh448_blue_tanks_0",
+                                  "path": "/Root/Aquarium/AquariumComponents/FishTank/Feedings/Mesh448/Mesh448_blue_tanks_0/Mesh448_blue_tanks_0",
+                                  "children": []
+                                }
+                              ]
+                            },
+                            {
+                              "name": "Mesh448_metal_tanks_0",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/Feedings/Mesh448/Mesh448_metal_tanks_0",
+                              "children": [
+                                {
+                                  "name": "Mesh448_metal_tanks_0",
+                                  "path": "/Root/Aquarium/AquariumComponents/FishTank/Feedings/Mesh448/Mesh448_metal_tanks_0/Mesh448_metal_tanks_0",
+                                  "children": []
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
                       "name": "Bottoms",
-                      "path": "/Root/FishTanks/Contents/Tank/Bottoms",
+                      "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms",
                       "children": [
                         {
                           "name": "Component_28_13",
-                          "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_13",
+                          "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_13",
                           "children": [
                             {
                               "name": "Mesh442",
-                              "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_13/Mesh442",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_13/Mesh442",
                               "children": [
                                 {
                                   "name": "Mesh442_metal_tanks_0",
-                                  "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_13/Mesh442/Mesh442_metal_tanks_0",
+                                  "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_13/Mesh442/Mesh442_metal_tanks_0",
                                   "children": [
                                     {
                                       "name": "Mesh442_metal_tanks_0",
-                                      "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_13/Mesh442/Mesh442_metal_tanks_0/Mesh442_metal_tanks_0",
+                                      "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_13/Mesh442/Mesh442_metal_tanks_0/Mesh442_metal_tanks_0",
                                       "children": []
                                     }
                                   ]
@@ -720,19 +754,19 @@
                         },
                         {
                           "name": "Component_28_14",
-                          "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_14",
+                          "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_14",
                           "children": [
                             {
                               "name": "Mesh443",
-                              "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_14/Mesh443",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_14/Mesh443",
                               "children": [
                                 {
                                   "name": "Mesh443_metal_tanks_0",
-                                  "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_14/Mesh443/Mesh443_metal_tanks_0",
+                                  "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_14/Mesh443/Mesh443_metal_tanks_0",
                                   "children": [
                                     {
                                       "name": "Mesh443_metal_tanks_0",
-                                      "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_14/Mesh443/Mesh443_metal_tanks_0/Mesh443_metal_tanks_0",
+                                      "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_14/Mesh443/Mesh443_metal_tanks_0/Mesh443_metal_tanks_0",
                                       "children": []
                                     }
                                   ]
@@ -743,19 +777,19 @@
                         },
                         {
                           "name": "Component_28_15",
-                          "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_15",
+                          "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_15",
                           "children": [
                             {
                               "name": "Mesh444",
-                              "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_15/Mesh444",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_15/Mesh444",
                               "children": [
                                 {
                                   "name": "Mesh444_metal_tanks_0",
-                                  "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_15/Mesh444/Mesh444_metal_tanks_0",
+                                  "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_15/Mesh444/Mesh444_metal_tanks_0",
                                   "children": [
                                     {
                                       "name": "Mesh444_metal_tanks_0",
-                                      "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_15/Mesh444/Mesh444_metal_tanks_0/Mesh444_metal_tanks_0",
+                                      "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_15/Mesh444/Mesh444_metal_tanks_0/Mesh444_metal_tanks_0",
                                       "children": []
                                     }
                                   ]
@@ -766,19 +800,19 @@
                         },
                         {
                           "name": "Component_28_16",
-                          "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_16",
+                          "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_16",
                           "children": [
                             {
                               "name": "Mesh445",
-                              "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_16/Mesh445",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_16/Mesh445",
                               "children": [
                                 {
                                   "name": "Mesh445_metal_tanks_0",
-                                  "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_16/Mesh445/Mesh445_metal_tanks_0",
+                                  "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_16/Mesh445/Mesh445_metal_tanks_0",
                                   "children": [
                                     {
                                       "name": "Mesh445_metal_tanks_0",
-                                      "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_16/Mesh445/Mesh445_metal_tanks_0/Mesh445_metal_tanks_0",
+                                      "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_16/Mesh445/Mesh445_metal_tanks_0/Mesh445_metal_tanks_0",
                                       "children": []
                                     }
                                   ]
@@ -789,19 +823,19 @@
                         },
                         {
                           "name": "Component_28_17",
-                          "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_17",
+                          "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_17",
                           "children": [
                             {
                               "name": "Mesh446",
-                              "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_17/Mesh446",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_17/Mesh446",
                               "children": [
                                 {
                                   "name": "Mesh446_metal_tanks_0",
-                                  "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_17/Mesh446/Mesh446_metal_tanks_0",
+                                  "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_17/Mesh446/Mesh446_metal_tanks_0",
                                   "children": [
                                     {
                                       "name": "Mesh446_metal_tanks_0",
-                                      "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_17/Mesh446/Mesh446_metal_tanks_0/Mesh446_metal_tanks_0",
+                                      "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_17/Mesh446/Mesh446_metal_tanks_0/Mesh446_metal_tanks_0",
                                       "children": []
                                     }
                                   ]
@@ -812,19 +846,19 @@
                         },
                         {
                           "name": "Component_28_18",
-                          "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_18",
+                          "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_18",
                           "children": [
                             {
                               "name": "Mesh447",
-                              "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_18/Mesh447",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_18/Mesh447",
                               "children": [
                                 {
                                   "name": "Mesh447_metal_tanks_0",
-                                  "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_18/Mesh447/Mesh447_metal_tanks_0",
+                                  "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_18/Mesh447/Mesh447_metal_tanks_0",
                                   "children": [
                                     {
                                       "name": "Mesh447_metal_tanks_0",
-                                      "path": "/Root/FishTanks/Contents/Tank/Bottoms/Component_28_18/Mesh447/Mesh447_metal_tanks_0/Mesh447_metal_tanks_0",
+                                      "path": "/Root/Aquarium/AquariumComponents/FishTank/Bottoms/Component_28_18/Mesh447/Mesh447_metal_tanks_0/Mesh447_metal_tanks_0",
                                       "children": []
                                     }
                                   ]
@@ -836,77 +870,43 @@
                       ]
                     },
                     {
-                      "name": "Feedings",
-                      "path": "/Root/FishTanks/Contents/Tank/Feedings",
-                      "children": [
-                        {
-                          "name": "Mesh448",
-                          "path": "/Root/FishTanks/Contents/Tank/Feedings/Mesh448",
-                          "children": [
-                            {
-                              "name": "Mesh448_blue_tanks_0",
-                              "path": "/Root/FishTanks/Contents/Tank/Feedings/Mesh448/Mesh448_blue_tanks_0",
-                              "children": [
-                                {
-                                  "name": "Mesh448_blue_tanks_0",
-                                  "path": "/Root/FishTanks/Contents/Tank/Feedings/Mesh448/Mesh448_blue_tanks_0/Mesh448_blue_tanks_0",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Mesh448_metal_tanks_0",
-                              "path": "/Root/FishTanks/Contents/Tank/Feedings/Mesh448/Mesh448_metal_tanks_0",
-                              "children": [
-                                {
-                                  "name": "Mesh448_metal_tanks_0",
-                                  "path": "/Root/FishTanks/Contents/Tank/Feedings/Mesh448/Mesh448_metal_tanks_0/Mesh448_metal_tanks_0",
-                                  "children": []
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
                       "name": "InWater",
-                      "path": "/Root/FishTanks/Contents/Tank/InWater",
+                      "path": "/Root/Aquarium/AquariumComponents/FishTank/InWater",
                       "children": [
                         {
-                          "name": "MetalTank",
-                          "path": "/Root/FishTanks/Contents/Tank/InWater/MetalTank",
+                          "name": "Components",
+                          "path": "/Root/Aquarium/AquariumComponents/FishTank/InWater/Components",
                           "children": [
                             {
                               "name": "Water",
-                              "path": "/Root/FishTanks/Contents/Tank/InWater/MetalTank/Water",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/InWater/Components/Water",
                               "children": []
                             },
                             {
                               "name": "ParticleSystem",
-                              "path": "/Root/FishTanks/Contents/Tank/InWater/MetalTank/ParticleSystem",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/InWater/Components/ParticleSystem",
                               "children": [
                                 {
                                   "name": "Isosurface",
-                                  "path": "/Root/FishTanks/Contents/Tank/InWater/MetalTank/ParticleSystem/Isosurface",
+                                  "path": "/Root/Aquarium/AquariumComponents/FishTank/InWater/Components/ParticleSystem/Isosurface",
                                   "children": []
                                 }
                               ]
                             },
                             {
                               "name": "ParticleSet",
-                              "path": "/Root/FishTanks/Contents/Tank/InWater/MetalTank/ParticleSet",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/InWater/Components/ParticleSet",
                               "children": [
                                 {
                                   "name": "pointPrototype",
-                                  "path": "/Root/FishTanks/Contents/Tank/InWater/MetalTank/ParticleSet/pointPrototype",
+                                  "path": "/Root/Aquarium/AquariumComponents/FishTank/InWater/Components/ParticleSet/pointPrototype",
                                   "children": []
                                 }
                               ]
                             },
                             {
-                              "name": "Frame",
-                              "path": "/Root/FishTanks/Contents/Tank/InWater/MetalTank/Frame",
+                              "name": "Wall",
+                              "path": "/Root/Aquarium/AquariumComponents/FishTank/InWater/Components/Wall",
                               "children": []
                             }
                           ]
