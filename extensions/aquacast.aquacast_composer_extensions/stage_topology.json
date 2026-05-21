@@ -1,0 +1,114 @@
+{
+  "stage_name": "anon:0x61fff8936650:World0",
+  "root_layer": "anon:0x61fff8936650:World0.usd",
+  "default_prim": "World",
+  "tree": [
+    {
+      "name": "Render",
+      "path": "/Render",
+      "children": [
+        {
+          "name": "OmniverseKit",
+          "path": "/Render/OmniverseKit",
+          "children": [
+            {
+              "name": "HydraTextures",
+              "path": "/Render/OmniverseKit/HydraTextures",
+              "children": [
+                {
+                  "name": "omni_kit_widget_viewport_ViewportTexture_0",
+                  "path": "/Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0",
+                  "children": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "OmniverseGlobalRenderSettings",
+          "path": "/Render/OmniverseGlobalRenderSettings",
+          "children": []
+        },
+        {
+          "name": "Vars",
+          "path": "/Render/Vars",
+          "children": [
+            {
+              "name": "LdrColor",
+              "path": "/Render/Vars/LdrColor",
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "OmniverseKit_Persp",
+      "path": "/OmniverseKit_Persp",
+      "children": []
+    },
+    {
+      "name": "World",
+      "path": "/World",
+      "children": []
+    },
+    {
+      "name": "Environment",
+      "path": "/Environment",
+      "children": [
+        {
+          "name": "Sky",
+          "path": "/Environment/Sky",
+          "children": []
+        },
+        {
+          "name": "DistantLight",
+          "path": "/Environment/DistantLight",
+          "children": []
+        },
+        {
+          "name": "Looks",
+          "path": "/Environment/Looks",
+          "children": [
+            {
+              "name": "Grid",
+              "path": "/Environment/Looks/Grid",
+              "children": [
+                {
+                  "name": "Shader",
+                  "path": "/Environment/Looks/Grid/Shader",
+                  "children": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "ground",
+          "path": "/Environment/ground",
+          "children": []
+        },
+        {
+          "name": "groundCollider",
+          "path": "/Environment/groundCollider",
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "OmniverseKit_Front",
+      "path": "/OmniverseKit_Front",
+      "children": []
+    },
+    {
+      "name": "OmniverseKit_Top",
+      "path": "/OmniverseKit_Top",
+      "children": []
+    },
+    {
+      "name": "OmniverseKit_Right",
+      "path": "/OmniverseKit_Right",
+      "children": []
+    }
+  ]
+}

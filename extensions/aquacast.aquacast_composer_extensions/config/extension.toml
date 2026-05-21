@@ -9,7 +9,7 @@
 # its affiliates is strictly prohibited.
 
 [package]
-title = "My Aquacast Composer Setup Extension"
+title = "My USD Composer Setup Extension"
 version = "0.1.0"  # Semantic Versioning is used: https://semver.org/
 description = "A setup extension for a USD Composer based template application."
 category = "Setup"  # How to categorize this in the Extension Manager
@@ -39,12 +39,12 @@ legacy_mode = false
 
 
 [settings.exts."omni.kit.viewport.menubar.lighting"]
-rigs = "${aquacast.aquacast_composer}/data/light_rigs"
+rigs = "${aquacast.aquacast_composer_extensions}/data/light_rigs"
 defaultRig = "Default"
 
 
 [[python.module]]
-name = "aquacast.aquacast_composer"
+name = "aquacast.aquacast_composer_extensions"
 
 
 [documentation]

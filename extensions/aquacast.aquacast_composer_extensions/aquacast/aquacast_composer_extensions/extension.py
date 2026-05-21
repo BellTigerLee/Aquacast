@@ -15,6 +15,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 import webbrowser
 from pathlib import Path
 
@@ -33,15 +34,15 @@ from omni.kit.quicklayout import QuickLayout
 from omni.kit.window.title import get_main_window_title
 
 DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve(
-    "${aquacast.aquacast_composer}")
+    "${aquacast.aquacast_composer_extensions}")
 )
 
 
 def _load_aquacast_main_module():
     main_path = Path(__file__).resolve().parents[2] / "main.py"
-    spec = importlib.util.spec_from_file_location("aquacast_extensions_main", main_path)
+    spec = importlib.util.spec_from_file_location("test_aquacast_runtime_main", main_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load Aquacast main module: {main_path}")
+        raise RuntimeError(f"Unable to load Aquacast runtime module: {main_path}")
 
     module = importlib.util.module_from_spec(spec)
     old_dont_write_bytecode = sys.dont_write_bytecode
@@ -74,21 +75,30 @@ class CreateSetupExtension(omni.ext.IExt):
         of the extensions etc
         """
         self._settings = carb.settings.get_settings()
+        self._dev_reload_ext_id = _ext_id
+        self._dev_reload_sub = None
+        self._dev_reload_snapshot = {}
+        self._dev_reload_last_check = 0.0
+        self._dev_reload_requested = False
         self._stage_structure_cache = None
         self._fish_swim_controller = None
+        self._water_temp_controller = None
         self._aquacast_main = None
+        self._start_dev_autoreload()
         if self._settings and self._settings.get("/app/warmupMode"):
             # if warmup mode is enabled, we don't want to load the stage or
             # layout, just return
             return
+
 
         try:
             aquacast_main = _load_aquacast_main_module()
             self._aquacast_main = aquacast_main
             self._stage_structure_cache = aquacast_main.start_stage_structure_cache()
             self._fish_swim_controller = aquacast_main.start_fish_swim_controller()
+            self._water_temp_controller = aquacast_main.start_water_temp_controller()
         except Exception as exc:
-            carb.log_error(f"[Aquacast] Failed to start Aquacast runtime: {exc}")
+            carb.log_error(f"[test-Aquacast] Failed to start Aquacast runtime: {exc}")
 
         self._menu_layout = []
 
@@ -486,17 +496,74 @@ class CreateSetupExtension(omni.ext.IExt):
         # open "Asset Stores" window
         ui.Workspace.show_window("Asset Stores")
 
+
+    def _iter_dev_reload_files(self):
+        root = Path(__file__).resolve().parents[2]
+        for path in root.rglob("*.py"):
+            if "__pycache__" not in path.parts:
+                yield path
+        config_path = root / "config" / "extension.toml"
+        if config_path.exists():
+            yield config_path
+
+    def _snapshot_dev_reload_files(self):
+        snapshot = {}
+        for path in self._iter_dev_reload_files():
+            try:
+                snapshot[str(path)] = path.stat().st_mtime_ns
+            except OSError:
+                continue
+        return snapshot
+
+    def _start_dev_autoreload(self):
+        self._dev_reload_snapshot = self._snapshot_dev_reload_files()
+        stream = omni.kit.app.get_app().get_update_event_stream()
+        self._dev_reload_sub = stream.create_subscription_to_pop(
+            self._on_dev_autoreload_update,
+            name="test-Aquacast extension autoreload",
+        )
+        carb.log_info("[test-Aquacast] Watching extension files for auto reload")
+
+    def _on_dev_autoreload_update(self, _event):
+        if self._dev_reload_requested:
+            return
+
+        now = time.monotonic()
+        if now - self._dev_reload_last_check < 1.0:
+            return
+        self._dev_reload_last_check = now
+
+        snapshot = self._snapshot_dev_reload_files()
+        if snapshot == self._dev_reload_snapshot:
+            return
+
+        self._dev_reload_requested = True
+        carb.log_warn("[test-Aquacast] Extension file changed; reloading extension")
+        asyncio.ensure_future(self._reload_dev_extension())
+
+    async def _reload_dev_extension(self):
+        app = omni.kit.app.get_app()
+        manager = app.get_extension_manager()
+        ext_id = self._dev_reload_ext_id
+        await app.next_update_async()
+        manager.set_extension_enabled_immediate(ext_id, False)
+        await app.next_update_async()
+        manager.set_extension_enabled_immediate(ext_id, True)
+
     def on_shutdown(self):
         """Clean up the extension"""
+        self._dev_reload_sub = None
         if getattr(self, "_aquacast_main", None):
+            if self._water_temp_controller:
+                self._aquacast_main.stop_water_temp_controller()
+                self._water_temp_controller = None
             if self._fish_swim_controller:
                 self._aquacast_main.stop_fish_swim_controller()
                 self._fish_swim_controller = None
-        if self._stage_structure_cache and getattr(self, "_aquacast_main", None):
-            self._aquacast_main.stop_stage_structure_cache()
+            if self._stage_structure_cache:
+                self._aquacast_main.stop_stage_structure_cache()
+                self._stage_structure_cache = None
             self._aquacast_main = None
-            self._stage_structure_cache = None
-
         self._sub_fabric_delegate_changed = None
 
         omni.kit.menu.utils.remove_layout(self._menu_layout)

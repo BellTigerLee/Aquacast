@@ -1,9 +1,9 @@
-EXPORT_STAGE_TOPOLOGY_JSON = False
+EXPORT_STAGE_TOPOLOGY_JSON = True
 STAGE_TOPOLOGY_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer/stage_topology.json"
 
 ENABLE_FISH_SWIMMING = True
 FISH_NAME_PREFIX = "Fish_"
-WATER_PRIM_PATH = "/Root/FishTanks/Contents/Tank/InWater/MetalTank/Water"
+WATER_PRIM_PATH = "/Root/Group/Water"
 FISH_USE_STAGE_TOPOLOGY_JSON = True
 FISH_INIT_RETRY_SECONDS = 1.0 #1.0
 
@@ -41,3 +41,27 @@ FISH_BANK_GAIN_RANGE = (0.6, 1.0)
 FISH_BANK_GAIN_GLOBAL = 0.35
 FISH_MAX_BANK_RADIANS = 0.6
 FISH_BANK_LERP_RATE = 3.0
+
+
+# Water temperature visualization.
+ENABLE_WATER_TEMP_VIS = True
+
+ISOSURFACE_PRIM_PATH = "/Root/Group/ParticleSystem/Isosurface"
+TEMP_VIS_USE_STAGE_TOPOLOGY_JSON = True
+TEMP_VIS_INIT_RETRY_SECONDS = 1.0
+
+INITIAL_WATER_TEMP_C = 14.0
+INLET_WATER_TEMP_C = 14.0
+ROOM_TEMP_C = 22.0
+THERMAL_K_ROOM = 0.012
+THERMAL_K_INFLOW = 0.022
+INFLOW_ENABLED_DEFAULT = True
+
+TEMP_COLOR_STOPS = [
+    (10.0, (0.05, 0.25, 1.00)),
+    (14.0, (0.00, 0.75, 0.75)),
+    (18.0, (0.90, 0.55, 0.20)),
+    (25.0, (1.00, 0.12, 0.12)),
+]
+
+TEMP_VIS_LOG_INTERVAL_SECONDS = 5.0

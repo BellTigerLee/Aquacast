@@ -3,7 +3,7 @@ set -euo pipefail
 
 # 기본값 설정
 NO_WINDOW=""
-KIT_FILE="aquacast.aquacast_streaming.kit"
+KIT_FILE="aquacast.aquacast_composer_streaming"
 APP_ROOT="${HOME}/cs-project/kit-app-template"
 EXT_FOLDER="${HOME}/cs-project/Aquacast/extensions"
 EXT_ID="aquacast.aquacast_composer"
@@ -14,12 +14,12 @@ do
     if [ "$arg" == "--streaming" ]; then
         NO_WINDOW="--no-window"
         # streaming 옵션이 명시되면 streaming용 kit 사용 (기본값과 동일)
-        KIT_FILE="aquacast.aquacast_streaming.kit"
+        KIT_FILE="aquacast.aquacast_composer_streaming.kit"
     fi
 
     if [ "$arg" == "--composer" ]; then
         # composer 옵션이 들어오면 일반 composer kit 사용
-        KIT_FILE="aquacast.aquacast.kit"
+        KIT_FILE="aquacast.aquacast_composer.kit"
     fi
 done
 

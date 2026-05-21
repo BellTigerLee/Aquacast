@@ -12,14 +12,16 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import fish_dynamics  # noqa: E402
+import thermal_dynamics  # noqa: E402
 
 import carb  # noqa: E402
 import omni.kit.app  # noqa: E402
 import omni.usd  # noqa: E402
-from pxr import Gf, Usd, UsdGeom  # noqa: E402
+from pxr import Gf, Sdf, Usd, UsdGeom, Vt  # noqa: E402
 
 _stage_structure_cache = None
 _fish_swim_controller = None
+_water_temp_controller = None
 
 
 def should_print_stage_topology():
@@ -82,6 +84,34 @@ def stop_fish_swim_controller():
         _fish_swim_controller = None
 
 
+def start_water_temp_controller():
+    global _water_temp_controller
+    if _water_temp_controller is None:
+        if not bool(get_global_config("ENABLE_WATER_TEMP_VIS", False)):
+            return None
+        _water_temp_controller = WaterTempController()
+        _water_temp_controller.start()
+    return _water_temp_controller
+
+
+def stop_water_temp_controller():
+    global _water_temp_controller
+    if _water_temp_controller is not None:
+        _water_temp_controller.stop()
+        _water_temp_controller = None
+
+
+def water_temp_controller_inflow_state():
+    if _water_temp_controller is None:
+        return False
+    return _water_temp_controller.is_inflow_enabled()
+
+
+def toggle_water_temp_controller_inflow():
+    if _water_temp_controller is not None:
+        _water_temp_controller.toggle_inflow()
+
+
 def get_stage_structure():
     if _stage_structure_cache is None:
         return {}
@@ -119,6 +149,41 @@ def _get_topology_paths_by_name(name):
         for node in _iter_topology_nodes(snapshot.get("tree", []))
         if node.get("name") == name and node.get("path")
     ]
+
+
+def _topology_node_has_child(node, child_name):
+    return any(child.get("name") == child_name for child in node.get("children", []) or [])
+
+
+def _get_fish_base_name(prefix):
+    configured = get_global_config("FISH_BASE_NAME", None)
+    if configured:
+        return str(configured)
+    if prefix.endswith("_") and len(prefix) > 1:
+        return prefix[:-1]
+    return prefix
+
+
+def _topology_node_matches_fish_root(node, pattern, base_name):
+    name = str(node.get("name", ""))
+    if pattern.match(name):
+        return True
+    return name == base_name and _topology_node_has_child(node, "Meshes")
+
+
+def _prim_has_child(prim, child_name):
+    try:
+        child = prim.GetChild(child_name)
+        return bool(child and child.IsValid())
+    except Exception:
+        return False
+
+
+def _prim_matches_fish_root(prim, pattern, base_name):
+    name = prim.GetName()
+    if pattern.match(name):
+        return True
+    return name == base_name and _prim_has_child(prim, "Meshes")
 
 
 def _as_vec3(value, default=(0.0, 0.0, 0.0)):
@@ -389,7 +454,14 @@ class FishSwimController:
             topology_paths = _get_topology_paths_by_name("Water")
             topology_paths = sorted(
                 topology_paths,
-                key=lambda path: (0 if "MetalTank" in path else 1, path),
+                key=lambda path: (
+                    0 if "/Aquarium/" in path and "/Looks/" not in path else 1,
+                    0 if "/Looks/" not in path else 1,
+                    0 if "/InWater/" in path and path.endswith("/Water") else 1,
+                    0 if "MetalTank" in path else 1,
+                    0 if path.endswith("/Water") else 1,
+                    path,
+                ),
             )
             for path in topology_paths:
                 prim = stage.GetPrimAtPath(path)
@@ -455,27 +527,30 @@ class FishSwimController:
 
     def _find_fish_prims(self, stage):
         prefix = str(get_global_config("FISH_NAME_PREFIX", "Fish_"))
+        base_name = _get_fish_base_name(prefix)
         pattern = re.compile(rf"^{re.escape(prefix)}\d+$")
 
         if bool(get_global_config("FISH_USE_STAGE_TOPOLOGY_JSON", True)):
             topology_fish = []
             snapshot = _get_topology_snapshot()
             for node in _iter_topology_nodes(snapshot.get("tree", [])):
-                name = str(node.get("name", ""))
                 path = str(node.get("path", ""))
-                if not pattern.match(name) or not path:
+                if not path or not _topology_node_matches_fish_root(node, pattern, base_name):
                     continue
                 prim = stage.GetPrimAtPath(path)
                 if prim and prim.IsValid():
                     topology_fish.append(prim)
             if topology_fish:
-                return sorted(topology_fish, key=lambda prim: prim.GetName())
+                return sorted(topology_fish, key=lambda prim: prim.GetPath().pathString)
 
         fish = []
         for prim in stage.Traverse():
-            if prim.GetPath().GetParentPath().pathString == "/" and pattern.match(prim.GetName()):
+            if (
+                prim.GetPath().GetParentPath().pathString == "/"
+                and _prim_matches_fish_root(prim, pattern, base_name)
+            ):
                 fish.append(prim)
-        return sorted(fish, key=lambda prim: prim.GetName())
+        return sorted(fish, key=lambda prim: prim.GetPath().pathString)
 
     def _get_trait_ranges(self):
         return {
@@ -844,6 +919,272 @@ class StageStructureCache:
         elif event_type == int(omni.usd.StageEventType.CLOSED):
             self.clear()
             carb.log_info("[Aquacast] Stage cache cleared.")
+
+
+class WaterTempController:
+    """Drive bulk water temperature and color the Isosurface prim."""
+
+    def __init__(self):
+        self._stage_event_sub = None
+        self._update_sub = None
+        self._initialized = False
+        self._isosurface_prim = None
+        self._display_color_attr = None
+        self._T = float(get_global_config("INITIAL_WATER_TEMP_C", 14.0))
+        self._inflow_enabled = bool(get_global_config("INFLOW_ENABLED_DEFAULT", True))
+        inlet = float(get_global_config("INLET_WATER_TEMP_C", 14.0))
+        room = float(get_global_config("ROOM_TEMP_C", 22.0))
+        if inlet > room:
+            carb.log_warn(
+                f"[Aquacast Temp] INLET_WATER_TEMP_C ({inlet}) > ROOM_TEMP_C ({room}); "
+                "inflow will heat rather than cool"
+            )
+        self._last_update_time = None
+        self._last_log_time = 0.0
+        self._next_init_retry_time = 0.0
+        self._warned_missing_isosurface = False
+        self._color_stops_cached = None
+        self._color_stops_sorted = None
+        self._prev_rgb = None
+
+    def start(self):
+        usd_context = omni.usd.get_context()
+        self._stage_event_sub = usd_context.get_stage_event_stream().create_subscription_to_pop(
+            self._on_stage_event,
+            name="aquacast_water_temp_stage",
+        )
+        self._update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+            self._on_update,
+            name="aquacast_water_temp_update",
+        )
+        asyncio.ensure_future(self._initialize_after_frames(3))
+
+    def stop(self):
+        self._stage_event_sub = None
+        self._update_sub = None
+        self._isosurface_prim = None
+        self._display_color_attr = None
+        self._initialized = False
+
+    async def _initialize_after_frames(self, frames=1):
+        app = omni.kit.app.get_app()
+        for _ in range(frames):
+            await app.next_update_async()
+        self._initialize()
+
+    def _initialize(self):
+        if not bool(get_global_config("ENABLE_WATER_TEMP_VIS", False)):
+            self._initialized = False
+            self._isosurface_prim = None
+            self._display_color_attr = None
+            return
+
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            self._schedule_init_retry()
+            return
+
+        isosurface_prim = self._find_isosurface_prim(stage)
+        if not isosurface_prim or not isosurface_prim.IsValid():
+            self._warn_missing_isosurface_once()
+            self._initialized = False
+            self._isosurface_prim = None
+            self._display_color_attr = None
+            self._schedule_init_retry()
+            return
+
+        self._warned_missing_isosurface = False
+        self._isosurface_prim = isosurface_prim
+        self._display_color_attr = self._bind_display_color_primvar(stage, isosurface_prim)
+        if self._display_color_attr is None:
+            carb.log_warn(
+                "[Aquacast Temp] Failed to bind displayColor primvar on "
+                f"{isosurface_prim.GetPath()}; color updates will be skipped"
+            )
+        self._initialized = True
+        carb.log_info(
+            f"[Aquacast Temp] Bound to Isosurface at {isosurface_prim.GetPath()}; "
+            f"T={self._T:.2f} C, inflow={'ON' if self._inflow_enabled else 'OFF'}"
+        )
+
+    def is_inflow_enabled(self):
+        return self._inflow_enabled
+
+    def toggle_inflow(self):
+        self._inflow_enabled = not self._inflow_enabled
+        carb.log_info(f"[Aquacast Temp] Inflow toggled -> {'ON' if self._inflow_enabled else 'OFF'}")
+
+    def _schedule_init_retry(self):
+        retry = float(get_global_config("TEMP_VIS_INIT_RETRY_SECONDS", 1.0))
+        self._next_init_retry_time = time.time() + max(0.1, retry)
+
+    def _warn_missing_isosurface_once(self):
+        if self._warned_missing_isosurface:
+            return
+        carb.log_warn(
+            "[Aquacast Temp] Isosurface prim not found; will retry "
+            f"(configured path={get_global_config('ISOSURFACE_PRIM_PATH', '')!r})"
+        )
+        self._warned_missing_isosurface = True
+
+    def _find_isosurface_prim(self, stage):
+        configured = str(get_global_config("ISOSURFACE_PRIM_PATH", "") or "").strip()
+        if configured:
+            prim = stage.GetPrimAtPath(configured)
+            if prim and prim.IsValid():
+                return prim
+
+        if bool(get_global_config("TEMP_VIS_USE_STAGE_TOPOLOGY_JSON", True)):
+            for path in _get_topology_paths_by_name("Isosurface"):
+                prim = stage.GetPrimAtPath(path)
+                if prim and prim.IsValid():
+                    return prim
+
+        traversal = stage.TraverseAll() if hasattr(stage, "TraverseAll") else stage.Traverse()
+        for prim in traversal:
+            if prim and prim.IsValid() and prim.GetName() == "Isosurface":
+                return prim
+        return None
+
+    def _bind_display_color_primvar(self, stage, prim):
+        try:
+            session_layer = stage.GetSessionLayer()
+            previous_edit_target = stage.GetEditTarget()
+            if session_layer is not None:
+                stage.SetEditTarget(session_layer)
+            try:
+                primvars_api = UsdGeom.PrimvarsAPI(prim)
+                primvar = primvars_api.CreatePrimvar(
+                    "displayColor",
+                    Sdf.ValueTypeNames.Color3fArray,
+                    UsdGeom.Tokens.constant,
+                )
+                return primvar.GetAttr()
+            finally:
+                if previous_edit_target is not None:
+                    stage.SetEditTarget(previous_edit_target)
+        except Exception as exc:
+            carb.log_warn(f"[Aquacast Temp] CreatePrimvar failed: {exc}")
+            return None
+
+    def _write_color(self, stage, r, g, b):
+        if self._display_color_attr is None:
+            return
+
+        rgb = (
+            max(0.0, min(1.0, r)),
+            max(0.0, min(1.0, g)),
+            max(0.0, min(1.0, b)),
+        )
+        if self._prev_rgb is not None and all(
+            abs(current - previous) <= (0.5 / 255.0)
+            for current, previous in zip(rgb, self._prev_rgb)
+        ):
+            return
+
+        try:
+            session_layer = stage.GetSessionLayer()
+            if session_layer is not None:
+                with Usd.EditContext(stage, session_layer):
+                    self._display_color_attr.Set(Vt.Vec3fArray([Gf.Vec3f(*rgb)]))
+            else:
+                self._display_color_attr.Set(Vt.Vec3fArray([Gf.Vec3f(*rgb)]))
+            self._prev_rgb = rgb
+        except Exception as exc:
+            carb.log_warn(f"[Aquacast Temp] Failed to write displayColor: {exc}")
+
+    def _sorted_stops(self, stops):
+        if stops is not self._color_stops_cached:
+            self._color_stops_cached = stops
+            try:
+                self._color_stops_sorted = sorted(stops, key=lambda stop: stop[0])
+            except Exception:
+                self._color_stops_sorted = []
+        return self._color_stops_sorted
+
+    def _on_update(self, _event):
+        now = time.time()
+
+        if not self._initialized or self._isosurface_prim is None:
+            if now >= self._next_init_retry_time:
+                self._initialize()
+            self._last_update_time = now
+            return
+
+        if self._last_update_time is None:
+            self._last_update_time = now
+            return
+        dt = min(now - self._last_update_time, 0.25)
+        self._last_update_time = now
+        if dt <= 0.0:
+            return
+
+        t_room = float(get_global_config("ROOM_TEMP_C", 22.0))
+        t_inlet = float(get_global_config("INLET_WATER_TEMP_C", 14.0))
+        k_room = float(get_global_config("THERMAL_K_ROOM", 0.012))
+        k_inflow = float(get_global_config("THERMAL_K_INFLOW", 0.022))
+
+        self._T = thermal_dynamics.step_temperature(
+            self._T,
+            dt,
+            T_room=t_room,
+            T_inlet=t_inlet,
+            k_room=k_room,
+            k_inflow=k_inflow,
+            inflow_enabled=self._inflow_enabled,
+        )
+
+        stops = self._sorted_stops(get_global_config("TEMP_COLOR_STOPS", []))
+        if stops:
+            r, g, b = thermal_dynamics.temperature_to_rgb(self._T, stops)
+            stage = omni.usd.get_context().get_stage()
+            if stage is not None:
+                self._write_color(stage, r, g, b)
+
+        self._maybe_log(now, t_room, t_inlet, k_room, k_inflow)
+
+    def _maybe_log(self, now, t_room, t_inlet, k_room, k_inflow):
+        interval = float(get_global_config("TEMP_VIS_LOG_INTERVAL_SECONDS", 5.0))
+        if interval <= 0.0 or now - self._last_log_time < interval:
+            return
+
+        self._last_log_time = now
+        eq = thermal_dynamics.equilibrium_temperature(
+            T_room=t_room,
+            T_inlet=t_inlet,
+            k_room=k_room,
+            k_inflow=k_inflow,
+            inflow_enabled=self._inflow_enabled,
+        )
+        eq_str = f"{eq:.2f} C" if eq is not None else "n/a"
+        carb.log_info(
+            f"[Aquacast Temp] T={self._T:.2f} C, eq={eq_str}, "
+            f"inflow={'ON' if self._inflow_enabled else 'OFF'}"
+        )
+
+    def _on_stage_event(self, event):
+        event_type = event.type
+        if event_type in (
+            int(omni.usd.StageEventType.OPENED),
+            int(omni.usd.StageEventType.ASSETS_LOADED),
+        ):
+            self._initialized = False
+            self._isosurface_prim = None
+            self._display_color_attr = None
+            self._prev_rgb = None
+            self._T = float(get_global_config("INITIAL_WATER_TEMP_C", 14.0))
+            self._last_update_time = None
+            self._next_init_retry_time = 0.0
+            self._warned_missing_isosurface = False
+            asyncio.ensure_future(self._initialize_after_frames(3))
+        elif event_type == int(omni.usd.StageEventType.CLOSED):
+            self._initialized = False
+            self._isosurface_prim = None
+            self._display_color_attr = None
+            self._prev_rgb = None
+            self._last_update_time = None
+            self._next_init_retry_time = 0.0
+            self._warned_missing_isosurface = False
 
 
 if __name__ == "__main__":
