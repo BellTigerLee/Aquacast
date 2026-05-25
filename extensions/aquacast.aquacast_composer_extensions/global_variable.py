@@ -1,5 +1,8 @@
 EXPORT_STAGE_TOPOLOGY_JSON = True
-STAGE_TOPOLOGY_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer/stage_topology.json"
+STAGE_TOPOLOGY_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/stage_topology.json"
+
+ENABLE_AUTO_OPEN_STAGE = True
+AUTO_OPEN_STAGE_PATH = "/home/netai-sys/cs-project/assets/Fishtank_test.usd"
 
 ENABLE_FISH_SWIMMING = True
 FISH_NAME_PREFIX = "Fish_"
@@ -65,3 +68,18 @@ TEMP_COLOR_STOPS = [
 ]
 
 TEMP_VIS_LOG_INTERVAL_SECONDS = 5.0
+
+# Runtime water temperature particles authored into the session layer at startup.
+ENABLE_WATER_TEMP_PARTICLES = True
+TEMP_PARTICLE_PRIM_PATH = "/Root/Group/TemperatureParticlesInsideWater"
+# Increase or decrease this to control how many runtime point particles are authored.
+TEMP_PARTICLE_COUNT = 8000 
+TEMP_PARTICLE_RANDOM_SEED = 42
+TEMP_PARTICLE_RADIUS_RATIO = 0.94
+TEMP_PARTICLE_HEIGHT_RATIO = 0.94
+TEMP_PARTICLE_UP_AXIS = "Y"
+TEMP_PARTICLE_WIDTH = 0.8
+TEMP_PARTICLE_HEATING_MODE = "side"
+TEMP_PARTICLE_HEAT_DELTA_C = 42.0
+TEMP_PARTICLE_SPREAD_RATE = 0.05
+TEMP_PARTICLE_UPDATE_INTERVAL_SECONDS = 0.12

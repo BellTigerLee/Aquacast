@@ -55,6 +55,24 @@ def _load_aquacast_main_module():
     return module
 
 
+def _get_runtime_config(name, default=None):
+    config_path = Path(__file__).resolve().parents[2] / "global_variable.py"
+    spec = importlib.util.spec_from_file_location("aquacast_global_variable_for_extension", config_path)
+    if spec is None or spec.loader is None:
+        return default
+    module = importlib.util.module_from_spec(spec)
+    old_dont_write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        carb.log_warn(f"[test-Aquacast] Failed to read runtime config {config_path}: {exc}")
+        return default
+    finally:
+        sys.dont_write_bytecode = old_dont_write_bytecode
+    return getattr(module, name, default)
+
+
 async def _load_layout(layout_file: str, keep_windows_open=False):
     """Loads a provided layout file and ensures the viewport is set to FILL."""
     try:
@@ -205,7 +223,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         if not test_mode and not \
                 self._settings.get("/app/content/emptyStageOnStart"):
-            asyncio.ensure_future(self.__new_stage())
+            asyncio.ensure_future(self.__open_configured_stage_or_new())
 
         startup_time = \
             omni.kit.app.get_app_interface().get_time_since_start_s()
@@ -285,14 +303,27 @@ class CreateSetupExtension(omni.ext.IExt):
                 "/persistent/app/useFabricSceneDelegate", enabled
             )
 
-    async def __new_stage(self):
-        """Create a new stage """
-        # 5 frame delay to allow Layout
+    async def __open_configured_stage_or_new(self):
+        """Open the configured Aquacast scene, falling back to a new stage."""
         for _ in range(5):
             await omni.kit.app.get_app().next_update_async()
 
-        if omni.usd.get_context().can_open_stage() and not omni.usd.get_context().get_stage_url():
-            stage_templates.new_stage(template=None)
+        usd_context = omni.usd.get_context()
+        if not usd_context.can_open_stage() or usd_context.get_stage_url():
+            return
+
+        stage_path = str(_get_runtime_config("AUTO_OPEN_STAGE_PATH", "") or "").strip()
+        if bool(_get_runtime_config("ENABLE_AUTO_OPEN_STAGE", False)) and stage_path:
+            path = Path(stage_path).expanduser()
+            if path.exists():
+                carb.log_info(f"[test-Aquacast] Opening configured stage: {path}")
+                result = usd_context.open_stage(str(path))
+                if inspect.isawaitable(result):
+                    await result
+                return
+            carb.log_warn(f"[test-Aquacast] AUTO_OPEN_STAGE_PATH does not exist: {path}")
+
+        stage_templates.new_stage(template=None)
 
     def _launch_app(self, app_id, console=True, custom_args=None):
         """launch another Kit app with the same settings"""
