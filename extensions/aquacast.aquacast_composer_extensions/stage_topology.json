@@ -887,8 +887,33 @@
                                   "children": []
                                 },
                                 {
-                                  "name": "Sensor",
-                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/Sensor",
+                                  "name": "Sensor_02",
+                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/Sensor_02",
+                                  "children": []
+                                },
+                                {
+                                  "name": "Sensor_03",
+                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/Sensor_03",
+                                  "children": []
+                                },
+                                {
+                                  "name": "Sensor_04",
+                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/Sensor_04",
+                                  "children": []
+                                },
+                                {
+                                  "name": "Sensor_05",
+                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/Sensor_05",
+                                  "children": []
+                                },
+                                {
+                                  "name": "Sensor_06",
+                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/Sensor_06",
+                                  "children": []
+                                },
+                                {
+                                  "name": "Sensor_01",
+                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/Sensor_01",
                                   "children": []
                                 }
                               ]
