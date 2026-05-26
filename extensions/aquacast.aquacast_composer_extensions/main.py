@@ -112,6 +112,12 @@ def toggle_water_temp_controller_inflow():
         _water_temp_controller.toggle_inflow()
 
 
+def sample_water_temp_sensor(sensor_path=None, radius=None):
+    if _water_temp_controller is None:
+        return {"status": "water temperature controller is not running"}
+    return _water_temp_controller.sample_temperature_sensor(sensor_path, radius)
+
+
 def get_stage_structure():
     if _stage_structure_cache is None:
         return {}
@@ -922,7 +928,7 @@ class StageStructureCache:
 
 
 class WaterTempController:
-    """Drive bulk water temperature and color the Isosurface prim."""
+    """Drive bulk water temperature and runtime temperature particle visualization."""
 
     def __init__(self):
         self._stage_event_sub = None
@@ -952,6 +958,7 @@ class WaterTempController:
         self._particle_temperature_attr = None
         self._particle_heat_weights = []
         self._particle_positions = []
+        self._particle_temperatures = []
         self._last_particle_update_time = 0.0
         self._particle_elapsed = 0.0
         self._warned_missing_water = False
@@ -979,6 +986,7 @@ class WaterTempController:
         self._particle_temperature_attr = None
         self._particle_heat_weights = []
         self._particle_positions = []
+        self._particle_temperatures = []
         self._initialized = False
 
     async def _initialize_after_frames(self, frames=1):
@@ -1003,7 +1011,8 @@ class WaterTempController:
             self._schedule_init_retry()
             return
 
-        self._bind_isosurface(stage)
+        if bool(get_global_config("ENABLE_PARTICLE_SYSTEM_TEMP_COLOR", False)):
+            self._bind_isosurface(stage)
         if bool(get_global_config("ENABLE_WATER_TEMP_PARTICLES", True)):
             self._bind_temperature_particles(stage)
 
@@ -1069,6 +1078,123 @@ class WaterTempController:
     def toggle_inflow(self):
         self._inflow_enabled = not self._inflow_enabled
         carb.log_info(f"[Aquacast Temp] Inflow toggled -> {'ON' if self._inflow_enabled else 'OFF'}")
+
+    def sample_temperature_sensor(self, sensor_path=None, radius=None):
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return {"status": "stage is not open"}
+
+        sensor_prim = self._find_sensor_prim(stage, sensor_path)
+        if not sensor_prim or not sensor_prim.IsValid():
+            return {"status": "sensor prim not found"}
+
+        positions = self._particle_positions
+        temperatures = self._read_particle_temperatures()
+        if not positions or not temperatures:
+            return {
+                "status": "temperature particles are not ready",
+                "sensor_path": sensor_prim.GetPath().pathString,
+            }
+
+        count = min(len(positions), len(temperatures))
+        if count <= 0:
+            return {"status": "temperature particles are empty"}
+
+        radius_value = float(radius if radius is not None else get_global_config("TEMP_SENSOR_SAMPLE_RADIUS", 8.0))
+        radius_value = max(0.001, radius_value)
+        fallback_count = max(1, int(get_global_config("TEMP_SENSOR_FALLBACK_NEAREST_COUNT", 16)))
+        sensor_pos = self._prim_world_center(stage, sensor_prim)
+
+        samples = []
+        nearest = []
+        radius_sq = radius_value * radius_value
+        for index in range(count):
+            pos = positions[index]
+            dx = float(pos[0]) - float(sensor_pos[0])
+            dy = float(pos[1]) - float(sensor_pos[1])
+            dz = float(pos[2]) - float(sensor_pos[2])
+            distance_sq = dx * dx + dy * dy + dz * dz
+            temp = float(temperatures[index])
+            nearest.append((distance_sq, temp))
+            if distance_sq <= radius_sq:
+                samples.append((distance_sq, temp))
+
+        used_fallback = False
+        if not samples:
+            nearest.sort(key=lambda item: item[0])
+            samples = nearest[:fallback_count]
+            used_fallback = True
+
+        values = [temp for _, temp in samples]
+        distances = [math.sqrt(distance_sq) for distance_sq, _ in samples]
+        return {
+            "status": "ok",
+            "sensor_path": sensor_prim.GetPath().pathString,
+            "sensor_position": (float(sensor_pos[0]), float(sensor_pos[1]), float(sensor_pos[2])),
+            "radius": radius_value,
+            "sample_count": len(values),
+            "used_fallback": used_fallback,
+            "average_c": sum(values) / len(values),
+            "min_c": min(values),
+            "max_c": max(values),
+            "nearest_distance": min(distances) if distances else None,
+            "farthest_distance": max(distances) if distances else None,
+        }
+
+    def _read_particle_temperatures(self):
+        if self._particle_temperatures:
+            return self._particle_temperatures
+        if self._particle_temperature_attr is None:
+            return []
+        try:
+            values = self._particle_temperature_attr.Get()
+        except Exception:
+            return []
+        return [float(value) for value in values] if values else []
+
+    def _find_sensor_prim(self, stage, sensor_path=None):
+        configured = str(sensor_path or get_global_config("TEMP_SENSOR_PRIM_PATH", "") or "").strip()
+        if configured:
+            prim = stage.GetPrimAtPath(configured)
+            if prim and prim.IsValid():
+                return prim
+
+        for path in _get_topology_paths_by_name("Sensor"):
+            prim = stage.GetPrimAtPath(path)
+            if prim and prim.IsValid():
+                return prim
+
+        for prim in stage.Traverse():
+            if prim and prim.IsValid() and prim.GetName() == "Sensor":
+                return prim
+        return None
+
+    def _prim_world_center(self, stage, prim):
+        try:
+            bbox_cache = UsdGeom.BBoxCache(
+                Usd.TimeCode.Default(),
+                [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+                useExtentsHint=True,
+            )
+            aligned = bbox_cache.ComputeWorldBound(prim).ComputeAlignedBox()
+            minimum = aligned.GetMin()
+            maximum = aligned.GetMax()
+            center = Gf.Vec3d(
+                (minimum[0] + maximum[0]) * 0.5,
+                (minimum[1] + maximum[1]) * 0.5,
+                (minimum[2] + maximum[2]) * 0.5,
+            )
+            if all(math.isfinite(float(center[index])) for index in range(3)):
+                return center
+        except Exception:
+            pass
+
+        try:
+            xformable = UsdGeom.Xformable(prim)
+            matrix = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            return matrix.Transform(Gf.Vec3d(0.0, 0.0, 0.0))
+        except Exception:
+            return Gf.Vec3d(0.0, 0.0, 0.0)
 
     def _schedule_init_retry(self):
         retry = float(get_global_config("TEMP_VIS_INIT_RETRY_SECONDS", 1.0))
@@ -1252,6 +1378,7 @@ class WaterTempController:
             temp = self._T + heat_delta * weight * spread
             temperatures.append(float(temp))
             colors.append(Gf.Vec3f(*thermal_dynamics.temperature_to_rgb(temp, stops)))
+        self._particle_temperatures = temperatures
 
         try:
             session_layer = stage.GetSessionLayer()
@@ -1376,7 +1503,7 @@ class WaterTempController:
 
         stops = self._sorted_stops(get_global_config("TEMP_COLOR_STOPS", []))
         stage = omni.usd.get_context().get_stage()
-        if stops and stage is not None:
+        if bool(get_global_config("ENABLE_PARTICLE_SYSTEM_TEMP_COLOR", False)) and stops and stage is not None:
             r, g, b = thermal_dynamics.temperature_to_rgb(self._T, stops)
             self._write_color(stage, r, g, b)
         if stage is not None:
@@ -1405,10 +1532,7 @@ class WaterTempController:
 
     def _on_stage_event(self, event):
         event_type = event.type
-        if event_type in (
-            int(omni.usd.StageEventType.OPENED),
-            int(omni.usd.StageEventType.ASSETS_LOADED),
-        ):
+        if event_type == int(omni.usd.StageEventType.OPENED):
             self._initialized = False
             self._isosurface_prim = None
             self._display_color_attr = None
@@ -1418,6 +1542,7 @@ class WaterTempController:
             self._particle_temperature_attr = None
             self._particle_positions = []
             self._particle_heat_weights = []
+            self._particle_temperatures = []
             self._prev_rgb = None
             self._T = float(get_global_config("INITIAL_WATER_TEMP_C", 14.0))
             self._last_update_time = None
@@ -1427,6 +1552,9 @@ class WaterTempController:
             self._warned_missing_isosurface = False
             self._warned_missing_water = False
             asyncio.ensure_future(self._initialize_after_frames(3))
+        elif event_type == int(omni.usd.StageEventType.ASSETS_LOADED):
+            if not self._initialized:
+                asyncio.ensure_future(self._initialize_after_frames(3))
         elif event_type == int(omni.usd.StageEventType.CLOSED):
             self._initialized = False
             self._isosurface_prim = None

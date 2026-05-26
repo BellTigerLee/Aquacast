@@ -885,6 +885,11 @@
                                   "name": "Wall",
                                   "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/Wall",
                                   "children": []
+                                },
+                                {
+                                  "name": "Sensor",
+                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/Sensor",
+                                  "children": []
                                 }
                               ]
                             }
@@ -895,22 +900,6 @@
                   ]
                 }
               ]
-            },
-            {
-              "name": "ParticleSet",
-              "path": "/Root/Group/ParticleSet",
-              "children": [
-                {
-                  "name": "pointPrototype",
-                  "path": "/Root/Group/ParticleSet/pointPrototype",
-                  "children": []
-                }
-              ]
-            },
-            {
-              "name": "ParticleSystem",
-              "path": "/Root/Group/ParticleSystem",
-              "children": []
             },
             {
               "name": "Water",

@@ -102,6 +102,15 @@ class CreateSetupExtension(omni.ext.IExt):
         self._fish_swim_controller = None
         self._water_temp_controller = None
         self._aquacast_main = None
+        self._sensor_window = None
+        self._sensor_update_sub = None
+        self._sensor_last_update = 0.0
+        self._sensor_status_label = None
+        self._sensor_avg_label = None
+        self._sensor_range_label = None
+        self._sensor_samples_label = None
+        self._sensor_path_label = None
+        self._sensor_menu_items = []
         self._start_dev_autoreload()
         if self._settings and self._settings.get("/app/warmupMode"):
             # if warmup mode is enabled, we don't want to load the stage or
@@ -220,6 +229,7 @@ class CreateSetupExtension(omni.ext.IExt):
         asyncio.ensure_future(self.__property_window())
 
         self.__menu_update()
+        self._create_sensor_window()
 
         if not test_mode and not \
                 self._settings.get("/app/content/emptyStageOnStart"):
@@ -369,6 +379,90 @@ class CreateSetupExtension(omni.ext.IExt):
             console=False,
             custom_args={"--/app/auto_launch=false"}
         )
+
+    def _create_sensor_window(self):
+        if not bool(_get_runtime_config("ENABLE_WATER_TEMP_SENSOR_UI", True)):
+            return
+
+        self._sensor_window = ui.Window("Aquacast Temperature Sensor", width=380, height=180, visible=True)
+        with self._sensor_window.frame:
+            with ui.VStack(spacing=6):
+                ui.Label("Temperature Sensor", height=22)
+                self._sensor_status_label = ui.Label("Waiting for particles", height=20)
+                with ui.HStack(height=20):
+                    ui.Label("Average", width=90)
+                    self._sensor_avg_label = ui.Label("-- C")
+                with ui.HStack(height=20):
+                    ui.Label("Range", width=90)
+                    self._sensor_range_label = ui.Label("--")
+                with ui.HStack(height=20):
+                    ui.Label("Samples", width=90)
+                    self._sensor_samples_label = ui.Label("--")
+                self._sensor_path_label = ui.Label("Sensor: --", height=36, word_wrap=True)
+
+        self._sensor_update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+            self._on_sensor_ui_update,
+            name="aquacast_temperature_sensor_ui",
+        )
+        self._register_sensor_window_menu()
+        self._on_sensor_ui_update(None)
+
+    def _register_sensor_window_menu(self):
+        if self._sensor_menu_items:
+            return
+        self._sensor_menu_items = [
+            MenuItemDescription(
+                name="Aquacast/Temperature Sensor",
+                onclick_fn=self._show_sensor_window,
+            )
+        ]
+        omni.kit.menu.utils.add_menu_items(self._sensor_menu_items, name="Window")
+
+    def _show_sensor_window(self):
+        if self._sensor_window is None:
+            self._create_sensor_window()
+            return
+        self._sensor_window.visible = True
+
+    def _on_sensor_ui_update(self, _event):
+        if self._sensor_window is None or self._aquacast_main is None:
+            return
+        now = time.monotonic()
+        interval = float(_get_runtime_config("TEMP_SENSOR_UPDATE_INTERVAL_SECONDS", 0.5) or 0.5)
+        if now - self._sensor_last_update < max(0.05, interval):
+            return
+        self._sensor_last_update = now
+
+        try:
+            reading = self._aquacast_main.sample_water_temp_sensor()
+        except Exception as exc:
+            reading = {"status": f"sensor read failed: {exc}"}
+
+        status = reading.get("status", "unknown")
+        if status != "ok":
+            if self._sensor_status_label:
+                self._sensor_status_label.text = status
+            if self._sensor_avg_label:
+                self._sensor_avg_label.text = "-- C"
+            if self._sensor_range_label:
+                self._sensor_range_label.text = "--"
+            if self._sensor_samples_label:
+                self._sensor_samples_label.text = "--"
+            if self._sensor_path_label:
+                self._sensor_path_label.text = f"Sensor: {reading.get('sensor_path', '--')}"
+            return
+
+        fallback = " nearest" if reading.get("used_fallback") else ""
+        if self._sensor_status_label:
+            self._sensor_status_label.text = f"Radius {reading['radius']:.2f}{fallback}"
+        if self._sensor_avg_label:
+            self._sensor_avg_label.text = f"{reading['average_c']:.2f} C"
+        if self._sensor_range_label:
+            self._sensor_range_label.text = f"{reading['min_c']:.2f} - {reading['max_c']:.2f} C"
+        if self._sensor_samples_label:
+            self._sensor_samples_label.text = str(reading["sample_count"])
+        if self._sensor_path_label:
+            self._sensor_path_label.text = f"Sensor: {reading['sensor_path']}"
 
     async def __property_window(self):
         """Creates a propety window and sets column sizes."""
@@ -596,6 +690,11 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._stage_structure_cache = None
             self._aquacast_main = None
         self._sub_fabric_delegate_changed = None
+        self._sensor_update_sub = None
+        self._sensor_window = None
+        if self._sensor_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._sensor_menu_items, "Window")
+            self._sensor_menu_items = []
 
         omni.kit.menu.utils.remove_layout(self._menu_layout)
         self._menu_layout = None
