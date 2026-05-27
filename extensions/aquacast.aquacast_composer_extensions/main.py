@@ -316,6 +316,40 @@ def _smoothstep(edge0, edge1, value):
     return x * x * (3.0 - 2.0 * x)
 
 
+def _sample_color_stops(stops, count):
+    count = max(1, int(count))
+    if not stops:
+        return [Gf.Vec3f(0.0, 0.75, 0.75) for _ in range(count)]
+    sorted_stops = sorted(stops, key=lambda stop: stop[0])
+    stop_values = np.asarray([float(stop[0]) for stop in sorted_stops], dtype=np.float64)
+    stop_colors = np.asarray([stop[1] for stop in sorted_stops], dtype=np.float64)
+    if len(stop_values) == 1:
+        colors = np.repeat(stop_colors[:1], count, axis=0)
+    else:
+        samples = np.linspace(stop_values[0], stop_values[-1], count)
+        colors = np.column_stack([
+            np.interp(samples, stop_values, stop_colors[:, channel])
+            for channel in range(3)
+        ])
+    colors = np.clip(colors, 0.0, 1.0)
+    return [Gf.Vec3f(float(row[0]), float(row[1]), float(row[2])) for row in colors]
+
+
+def _colors_to_proto_indices(colors, palette):
+    if not colors or not palette:
+        return Vt.IntArray()
+    color_values = np.asarray(
+        [[float(color[0]), float(color[1]), float(color[2])] for color in colors],
+        dtype=np.float64,
+    )
+    palette_values = np.asarray(
+        [[float(color[0]), float(color[1]), float(color[2])] for color in palette],
+        dtype=np.float64,
+    )
+    distances = np.sum((color_values[:, None, :] - palette_values[None, :, :]) ** 2, axis=2)
+    return Vt.IntArray([int(index) for index in np.argmin(distances, axis=1)])
+
+
 def _lerp_vec3(start, end, t):
     t = _clamp(t, 0.0, 1.0)
     return Gf.Vec3d(
@@ -1056,6 +1090,9 @@ class WaterTempController:
         self._particle_color_attr = None
         self._particle_display_color_attr = None
         self._particle_display_color_attrs = []
+        self._particle_proto_indices_attr = None
+        self._particle_prototype_color_attrs = []
+        self._particle_color_palette = []
         self._particle_temperature_attr = None
         self._particle_heat_weights = []
         self._particle_positions = []
@@ -1089,6 +1126,9 @@ class WaterTempController:
         self._particle_color_attr = None
         self._particle_display_color_attr = None
         self._particle_display_color_attrs = []
+        self._particle_proto_indices_attr = None
+        self._particle_prototype_color_attrs = []
+        self._particle_color_palette = []
         self._particle_temperature_attr = None
         self._particle_heat_weights = []
         self._particle_positions = []
@@ -1465,40 +1505,92 @@ class WaterTempController:
             self._T,
             self._sorted_stops(get_global_config("TEMP_COLOR_STOPS", [])),
         ))
-        display_attrs = []
+        color_bins = max(2, min(256, int(get_global_config("TEMP_PARTICLE_COLOR_BINS", 64))))
+        color_palette = _sample_color_stops(get_global_config("TEMP_COLOR_STOPS", []), color_bins)
+        initial_colors = [cyan] * len(positions)
+        initial_proto_indices = _colors_to_proto_indices(initial_colors, color_palette)
+        prototype_color_attrs = []
         with Usd.EditContext(stage, edit_target):
             if stage.GetPrimAtPath(particle_path).IsValid():
                 stage.RemovePrim(particle_path)
-            container = UsdGeom.Xform.Define(stage, particle_path)
-            container.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
-            container.CreatePurposeAttr(UsdGeom.Tokens.default_)
-            for index, pos in enumerate(positions):
-                sphere_path = particle_path.AppendChild(f"P_{index:04d}")
-                sphere = UsdGeom.Sphere.Define(stage, sphere_path)
-                sphere.CreateRadiusAttr(width)
-                sphere.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
-                sphere.CreatePurposeAttr(UsdGeom.Tokens.default_)
-                color_attr = sphere.CreateDisplayColorAttr(Vt.Vec3fArray([cyan]))
-                sphere.CreateDisplayOpacityAttr(Vt.FloatArray([1.0]))
-                xformable = UsdGeom.Xformable(sphere.GetPrim())
-                translate_op = xformable.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble)
-                translate_op.Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
-                display_attrs.append(color_attr)
+            instancer = UsdGeom.PointInstancer.Define(stage, particle_path)
+            instancer.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
+            instancer.CreatePurposeAttr(UsdGeom.Tokens.default_)
+
+            prototypes_path = particle_path.AppendChild("Prototypes")
+            UsdGeom.Xform.Define(stage, prototypes_path)
+            prototype_targets = []
+            for index, color in enumerate(color_palette):
+                prototype_path = prototypes_path.AppendChild(f"Color_{index:03d}")
+                prototype = UsdGeom.Sphere.Define(stage, prototype_path)
+                prototype.CreateRadiusAttr(width)
+                prototype.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
+                prototype.CreatePurposeAttr(UsdGeom.Tokens.default_)
+                prototype_color_attrs.append(prototype.CreateDisplayColorAttr(Vt.Vec3fArray([color])))
+                prototype.CreateDisplayOpacityAttr(Vt.FloatArray([1.0]))
+                prototype_targets.append(prototype_path)
+
+            instancer.CreatePrototypesRel().SetTargets(prototype_targets)
+            proto_indices_attr = instancer.CreateProtoIndicesAttr(initial_proto_indices)
+            instancer.CreatePositionsAttr(Vt.Vec3fArray(positions))
+            min_corner = [
+                min(float(pos[axis]) for pos in positions) - width
+                for axis in range(3)
+            ]
+            max_corner = [
+                max(float(pos[axis]) for pos in positions) + width
+                for axis in range(3)
+            ]
+            instancer.CreateExtentAttr(Vt.Vec3fArray([
+                Gf.Vec3f(min_corner[0], min_corner[1], min_corner[2]),
+                Gf.Vec3f(max_corner[0], max_corner[1], max_corner[2]),
+            ]))
+
+            primvars_api = UsdGeom.PrimvarsAPI(instancer.GetPrim())
+            color_primvar = primvars_api.CreatePrimvar(
+                "displayColor",
+                Sdf.ValueTypeNames.Color3fArray,
+                UsdGeom.Tokens.vertex,
+            )
+            color_primvar.Set(Vt.Vec3fArray(initial_colors))
+            temperature_primvar = primvars_api.CreatePrimvar(
+                "temperature",
+                Sdf.ValueTypeNames.FloatArray,
+                UsdGeom.Tokens.vertex,
+            )
+            temperature_primvar.Set(Vt.FloatArray([float(self._T)] * len(positions)))
 
         self._particles_prim = stage.GetPrimAtPath(particle_path)
-        self._particle_color_attr = display_attrs[0] if display_attrs else None
+        self._particle_color_attr = color_primvar.GetAttr()
         self._particle_display_color_attr = self._particle_color_attr
-        self._particle_display_color_attrs = display_attrs
-        self._particle_temperature_attr = None
+        self._particle_display_color_attrs = []
+        self._particle_proto_indices_attr = proto_indices_attr
+        self._particle_prototype_color_attrs = prototype_color_attrs
+        self._particle_color_palette = color_palette
+        self._particle_temperature_attr = temperature_primvar.GetAttr()
         self._particle_positions = positions
         self._particle_heat_weights = heat_weights
         self._last_particle_update_time = 0.0
         self._particle_elapsed = 0.0
         self._write_particle_samples(stage, force=True)
         carb.log_info(
-            f"[Aquacast Temp] Authored {count} visible temperature spheres at {particle_path} "
+            f"[Aquacast Temp] Authored {count} temperature point instances at {particle_path} "
             f"inside water={water_prim.GetPath()}"
         )
+
+    def _write_particle_proto_colors(self, colors, palette=None):
+        if not colors:
+            return
+        prototype_color_attrs = getattr(self, "_particle_prototype_color_attrs", []) or []
+        if palette and prototype_color_attrs:
+            for attr, color in zip(prototype_color_attrs, palette):
+                attr.Set(Vt.Vec3fArray([color]))
+            self._particle_color_palette = list(palette)
+
+        proto_indices_attr = getattr(self, "_particle_proto_indices_attr", None)
+        color_palette = getattr(self, "_particle_color_palette", []) or []
+        if proto_indices_attr is not None and color_palette:
+            proto_indices_attr.Set(_colors_to_proto_indices(colors, color_palette))
 
     def _write_particle_samples(self, stage, force=False):
         if self._particle_color_attr is None or not self._particle_heat_weights:
@@ -1523,6 +1615,7 @@ class WaterTempController:
         spread = 1.0 - math.exp(-max(0.0, self._particle_elapsed) * max(0.0, spread_rate))
         temperatures = []
         colors = []
+        temp_palette = _sample_color_stops(stops, len(getattr(self, "_particle_color_palette", []) or []) or 64)
         for weight in self._particle_heat_weights:
             temp = self._T + heat_delta * weight * spread
             temperatures.append(float(temp))
@@ -1542,6 +1635,7 @@ class WaterTempController:
                             self._particle_color_attr.Set(Vt.Vec3fArray(colors))
                             if self._particle_display_color_attr is not None:
                                 self._particle_display_color_attr.Set(Vt.Vec3fArray(colors))
+                            self._write_particle_proto_colors(colors, temp_palette)
                     if self._particle_temperature_attr is not None:
                         self._particle_temperature_attr.Set(Vt.FloatArray(temperatures))
             else:
@@ -1553,6 +1647,7 @@ class WaterTempController:
                         self._particle_color_attr.Set(Vt.Vec3fArray(colors))
                         if self._particle_display_color_attr is not None:
                             self._particle_display_color_attr.Set(Vt.Vec3fArray(colors))
+                        self._write_particle_proto_colors(colors, temp_palette)
                 if self._particle_temperature_attr is not None:
                     self._particle_temperature_attr.Set(Vt.FloatArray(temperatures))
         except Exception as exc:
@@ -2027,6 +2122,13 @@ class WaterQualityController:
                             attr.Set(Vt.Vec3fArray([color]))
                     elif self._display_color_attr is not None:
                         self._display_color_attr.Set(Vt.Vec3fArray(display_colors))
+                        color_bins = len(getattr(temp_controller, "_particle_color_palette", []) or [])
+                        if color_bins <= 0:
+                            color_bins = max(2, min(256, int(get_global_config("TEMP_PARTICLE_COLOR_BINS", 64))))
+                        palette = _sample_color_stops(self._color_stops_for_view(self._view_variable()), color_bins)
+                        write_proto_colors = getattr(temp_controller, "_write_particle_proto_colors", None)
+                        if callable(write_proto_colors):
+                            write_proto_colors(display_colors, palette)
             finally:
                 if edit_context is not None:
                     edit_context.__exit__(None, None, None)
