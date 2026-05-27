@@ -8,6 +8,7 @@
 #
 
 import asyncio
+import builtins
 import importlib.util
 import inspect
 import logging
@@ -37,10 +38,49 @@ DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve(
     "${aquacast.aquacast_composer_extensions}")
 )
 
+_RUNTIME_MODULE_NAME = "test_aquacast_runtime_main"
+_RUNTIME_REGISTRY_NAME = "_aquacast_runtime_modules"
+
+
+def _stop_runtime_module(module):
+    if module is None:
+        return
+    for stop_name in (
+        "stop_water_quality_controller",
+        "stop_water_temp_controller",
+        "stop_fish_swim_controller",
+        "stop_stage_structure_cache",
+    ):
+        stop_fn = getattr(module, stop_name, None)
+        if not callable(stop_fn):
+            continue
+        try:
+            stop_fn()
+        except Exception as exc:
+            carb.log_warn(f"[test-Aquacast] Failed to run {stop_name} on stale runtime: {exc}")
+
+
+def _stop_registered_runtime_modules():
+    registry = getattr(builtins, _RUNTIME_REGISTRY_NAME, [])
+    for module in list(registry):
+        _stop_runtime_module(module)
+    registry.clear()
+
+    previous = sys.modules.get(_RUNTIME_MODULE_NAME)
+    _stop_runtime_module(previous)
+
+
+def _register_runtime_module(module):
+    registry = getattr(builtins, _RUNTIME_REGISTRY_NAME, None)
+    if registry is None:
+        registry = []
+        setattr(builtins, _RUNTIME_REGISTRY_NAME, registry)
+    registry.append(module)
+
 
 def _load_aquacast_main_module():
     main_path = Path(__file__).resolve().parents[2] / "main.py"
-    spec = importlib.util.spec_from_file_location("test_aquacast_runtime_main", main_path)
+    spec = importlib.util.spec_from_file_location(_RUNTIME_MODULE_NAME, main_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load Aquacast runtime module: {main_path}")
 
@@ -52,6 +92,7 @@ def _load_aquacast_main_module():
         spec.loader.exec_module(module)
     finally:
         sys.dont_write_bytecode = old_dont_write_bytecode
+    _register_runtime_module(module)
     return module
 
 
@@ -101,6 +142,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._stage_structure_cache = None
         self._fish_swim_controller = None
         self._water_temp_controller = None
+        self._water_quality_controller = None
         self._aquacast_main = None
         self._sensor_window = None
         self._sensor_update_sub = None
@@ -110,8 +152,20 @@ class CreateSetupExtension(omni.ext.IExt):
         self._sensor_range_label = None
         self._sensor_samples_label = None
         self._sensor_path_label = None
+        self._sensor_value_labels = {}
         self._sensor_menu_items = []
+        self._wq_view_window = None
+        self._wq_view_label = None
+        self._wq_view_menu_items = []
+        self._aquacast_menu_items = []
         self._start_dev_autoreload()
+        test_mode = self._settings.get("/app/testMode")
+        should_open_stage = (
+            not test_mode
+            and not self._settings.get("/app/content/emptyStageOnStart")
+        )
+        if should_open_stage:
+            asyncio.ensure_future(self.__open_configured_stage_or_new(wait_frames=1))
         if self._settings and self._settings.get("/app/warmupMode"):
             # if warmup mode is enabled, we don't want to load the stage or
             # layout, just return
@@ -119,11 +173,13 @@ class CreateSetupExtension(omni.ext.IExt):
 
 
         try:
+            _stop_registered_runtime_modules()
             aquacast_main = _load_aquacast_main_module()
             self._aquacast_main = aquacast_main
             self._stage_structure_cache = aquacast_main.start_stage_structure_cache()
             self._fish_swim_controller = aquacast_main.start_fish_swim_controller()
             self._water_temp_controller = aquacast_main.start_water_temp_controller()
+            self._water_quality_controller = aquacast_main.start_water_quality_controller()
         except Exception as exc:
             carb.log_error(f"[test-Aquacast] Failed to start Aquacast runtime: {exc}")
 
@@ -220,20 +276,15 @@ class CreateSetupExtension(omni.ext.IExt):
 
         layout_file = f"{DATA_PATH}/layouts/default.json"
 
-        # Setting to hack few things in test run. Ideally we shouldn't need it.
-        test_mode = self._settings.get("/app/testMode")
-
         if not test_mode:
             asyncio.ensure_future(_load_layout(layout_file, True))
 
         asyncio.ensure_future(self.__property_window())
 
         self.__menu_update()
+        self._register_aquacast_menu()
         self._create_sensor_window()
-
-        if not test_mode and not \
-                self._settings.get("/app/content/emptyStageOnStart"):
-            asyncio.ensure_future(self.__open_configured_stage_or_new())
+        self._create_wq_view_window()
 
         startup_time = \
             omni.kit.app.get_app_interface().get_time_since_start_s()
@@ -313,9 +364,9 @@ class CreateSetupExtension(omni.ext.IExt):
                 "/persistent/app/useFabricSceneDelegate", enabled
             )
 
-    async def __open_configured_stage_or_new(self):
+    async def __open_configured_stage_or_new(self, wait_frames=1):
         """Open the configured Aquacast scene, falling back to a new stage."""
-        for _ in range(5):
+        for _ in range(max(0, int(wait_frames))):
             await omni.kit.app.get_app().next_update_async()
 
         usd_context = omni.usd.get_context()
@@ -384,21 +435,33 @@ class CreateSetupExtension(omni.ext.IExt):
         if not bool(_get_runtime_config("ENABLE_WATER_TEMP_SENSOR_UI", True)):
             return
 
-        self._sensor_window = ui.Window("Aquacast Temperature Sensor", width=380, height=180, visible=True)
+        quality_enabled = bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False)))
+        title = "Aquacast Water Quality Sensor" if quality_enabled else "Aquacast Temperature Sensor"
+        self._sensor_window = ui.Window(title, width=430, height=310, visible=True)
         with self._sensor_window.frame:
             with ui.VStack(spacing=6):
-                ui.Label("Temperature Sensor", height=22)
+                ui.Label("Water Quality Sensor" if quality_enabled else "Temperature Sensor", height=22)
                 self._sensor_status_label = ui.Label("Waiting for particles", height=20)
-                with ui.HStack(height=20):
-                    ui.Label("Average", width=90)
-                    self._sensor_avg_label = ui.Label("-- C")
-                with ui.HStack(height=20):
-                    ui.Label("Range", width=90)
-                    self._sensor_range_label = ui.Label("--")
-                with ui.HStack(height=20):
-                    ui.Label("Samples", width=90)
-                    self._sensor_samples_label = ui.Label("--")
-                self._sensor_path_label = ui.Label("Sensor: --", height=36, word_wrap=True)
+                self._sensor_value_labels = {}
+                rows = [
+                    ("temperature_c", "Temp"),
+                    ("dissolved_oxygen_mg_l", "DO"),
+                    ("tan_mg_l", "TAN"),
+                    ("co2_mg_l", "CO2"),
+                    ("alkalinity_mg_l_as_caco3", "Alk"),
+                    ("ph", "pH"),
+                    ("nh3_mg_l", "NH3"),
+                ] if quality_enabled else [
+                    ("average_c", "Average"),
+                    ("range_c", "Range"),
+                    ("sample_count", "Samples"),
+                ]
+                for key, label in rows:
+                    with ui.HStack(height=20):
+                        ui.Label(label, width=105)
+                        value_label = ui.Label("--")
+                        self._sensor_value_labels[key] = value_label
+                self._sensor_path_label = ui.Label("Sensor: --", height=42, word_wrap=True)
 
         self._sensor_update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
             self._on_sensor_ui_update,
@@ -410,9 +473,10 @@ class CreateSetupExtension(omni.ext.IExt):
     def _register_sensor_window_menu(self):
         if self._sensor_menu_items:
             return
+        quality_enabled = bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False)))
         self._sensor_menu_items = [
             MenuItemDescription(
-                name="Aquacast/Temperature Sensor",
+                name="Aquacast/Water Quality Sensor" if quality_enabled else "Aquacast/Temperature Sensor",
                 onclick_fn=self._show_sensor_window,
             )
         ]
@@ -434,7 +498,11 @@ class CreateSetupExtension(omni.ext.IExt):
         self._sensor_last_update = now
 
         try:
-            reading = self._aquacast_main.sample_water_temp_sensor()
+            quality_enabled = bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False)))
+            if quality_enabled and hasattr(self._aquacast_main, "sample_water_quality_sensor"):
+                reading = self._aquacast_main.sample_water_quality_sensor()
+            else:
+                reading = self._aquacast_main.sample_water_temp_sensor()
         except Exception as exc:
             reading = {"status": f"sensor read failed: {exc}"}
 
@@ -442,12 +510,22 @@ class CreateSetupExtension(omni.ext.IExt):
         if status != "ok":
             if self._sensor_status_label:
                 self._sensor_status_label.text = status
-            if self._sensor_avg_label:
-                self._sensor_avg_label.text = "-- C"
-            if self._sensor_range_label:
-                self._sensor_range_label.text = "--"
-            if self._sensor_samples_label:
-                self._sensor_samples_label.text = "--"
+            for label in self._sensor_value_labels.values():
+                label.text = "--"
+            if self._sensor_path_label:
+                self._sensor_path_label.text = f"Sensor: {reading.get('sensor_path', '--')}"
+            return
+
+        if "dissolved_oxygen_mg_l" in reading:
+            if self._sensor_status_label:
+                self._sensor_status_label.text = str(reading.get("sensor_name", "sensor"))
+            self._set_sensor_label("temperature_c", f"{reading.get('temperature_c', 0.0):.2f} C")
+            self._set_sensor_label("dissolved_oxygen_mg_l", f"{reading.get('dissolved_oxygen_mg_l', 0.0):.2f} mg/L")
+            self._set_sensor_label("tan_mg_l", f"{reading.get('tan_mg_l', 0.0):.3f} mg/L")
+            self._set_sensor_label("co2_mg_l", f"{reading.get('co2_mg_l', 0.0):.2f} mg/L")
+            self._set_sensor_label("alkalinity_mg_l_as_caco3", f"{reading.get('alkalinity_mg_l_as_caco3', 0.0):.1f} mg/L CaCO3")
+            self._set_sensor_label("ph", f"{reading.get('ph', 0.0):.2f}")
+            self._set_sensor_label("nh3_mg_l", f"{reading.get('nh3_mg_l', 0.0):.4f} mg/L")
             if self._sensor_path_label:
                 self._sensor_path_label.text = f"Sensor: {reading.get('sensor_path', '--')}"
             return
@@ -455,14 +533,160 @@ class CreateSetupExtension(omni.ext.IExt):
         fallback = " nearest" if reading.get("used_fallback") else ""
         if self._sensor_status_label:
             self._sensor_status_label.text = f"Radius {reading['radius']:.2f}{fallback}"
-        if self._sensor_avg_label:
-            self._sensor_avg_label.text = f"{reading['average_c']:.2f} C"
-        if self._sensor_range_label:
-            self._sensor_range_label.text = f"{reading['min_c']:.2f} - {reading['max_c']:.2f} C"
-        if self._sensor_samples_label:
-            self._sensor_samples_label.text = str(reading["sample_count"])
+        self._set_sensor_label("average_c", f"{reading['average_c']:.2f} C")
+        self._set_sensor_label("range_c", f"{reading['min_c']:.2f} - {reading['max_c']:.2f} C")
+        self._set_sensor_label("sample_count", str(reading["sample_count"]))
         if self._sensor_path_label:
             self._sensor_path_label.text = f"Sensor: {reading['sensor_path']}"
+
+    def _set_sensor_label(self, key, value):
+        label = self._sensor_value_labels.get(key)
+        if label:
+            label.text = value
+
+    def _create_wq_view_window(self):
+        if not bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False))):
+            return
+        if self._wq_view_window is not None:
+            return
+
+        self._wq_view_window = ui.Window("Aquacast Water Quality View", width=300, height=190, visible=True)
+        with self._wq_view_window.frame:
+            with ui.VStack(spacing=6):
+                self._wq_view_label = ui.Label("Current: --", height=22)
+                with ui.HStack(height=28, spacing=6):
+                    ui.Button("Temp", clicked_fn=lambda: self._select_wq_view_variable("temperature"))
+                    ui.Button("DO", clicked_fn=lambda: self._select_wq_view_variable("dissolved_oxygen"))
+                    ui.Button("TAN", clicked_fn=lambda: self._select_wq_view_variable("tan"))
+                with ui.HStack(height=28, spacing=6):
+                    ui.Button("CO2", clicked_fn=lambda: self._select_wq_view_variable("co2"))
+                    ui.Button("pH", clicked_fn=lambda: self._select_wq_view_variable("ph"))
+                    ui.Button("Alk", clicked_fn=lambda: self._select_wq_view_variable("alkalinity"))
+                with ui.HStack(height=28, spacing=6):
+                    ui.Button("NH3", clicked_fn=lambda: self._select_wq_view_variable("nh3"))
+
+        self._register_wq_view_window_menu()
+        self._refresh_wq_view_label()
+
+    def _register_wq_view_window_menu(self):
+        if self._wq_view_menu_items:
+            return
+        self._wq_view_menu_items = [
+            MenuItemDescription(
+                name="Aquacast/Water Quality View Controls",
+                onclick_fn=self._show_wq_view_window,
+            )
+        ]
+        omni.kit.menu.utils.add_menu_items(self._wq_view_menu_items, name="Window")
+
+    def _show_wq_view_window(self):
+        if self._wq_view_window is None:
+            self._create_wq_view_window()
+            return
+        self._wq_view_window.visible = True
+        self._refresh_wq_view_label()
+
+    def _select_wq_view_variable(self, variable):
+        if self._aquacast_main and hasattr(self._aquacast_main, "set_quality_view_variable"):
+            self._aquacast_main.set_quality_view_variable(variable)
+        self._refresh_wq_view_label(variable)
+
+    def _refresh_wq_view_label(self, fallback=None):
+        if self._wq_view_label is None:
+            return
+        variable = fallback
+        if self._aquacast_main and hasattr(self._aquacast_main, "get_quality_snapshot"):
+            try:
+                snapshot = self._aquacast_main.get_quality_snapshot()
+                if snapshot.get("status") == "ok":
+                    variable = snapshot.get("view_variable", variable)
+            except Exception:
+                pass
+        label = {
+            "temperature": "Temperature",
+            "dissolved_oxygen": "Dissolved O2",
+            "tan": "TAN",
+            "co2": "CO2",
+            "ph": "pH",
+            "alkalinity": "Alkalinity",
+            "nh3": "NH3",
+        }.get(str(variable or ""), str(variable or "--"))
+        self._wq_view_label.text = f"Current: {label}"
+
+    def _register_aquacast_menu(self):
+        if self._aquacast_menu_items:
+            return
+        if not bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False))):
+            return
+
+        def _view(variable):
+            if self._aquacast_main and hasattr(self._aquacast_main, "set_quality_view_variable"):
+                self._aquacast_main.set_quality_view_variable(variable)
+            self._refresh_wq_view_label(variable)
+
+        def _feed_pulse():
+            if self._aquacast_main and hasattr(self._aquacast_main, "apply_feed"):
+                self._aquacast_main.apply_feed(1.0)
+
+        def _biofilter(enabled):
+            if self._aquacast_main and hasattr(self._aquacast_main, "set_biofilter"):
+                self._aquacast_main.set_biofilter(enabled)
+
+        def _scenario(name):
+            if self._aquacast_main and hasattr(self._aquacast_main, "load_scenario"):
+                self._aquacast_main.load_scenario(name)
+
+        self._aquacast_menu_items = [
+            MenuItemDescription(
+                name="Water Quality View/Temperature",
+                onclick_fn=lambda: _view("temperature"),
+            ),
+            MenuItemDescription(
+                name="Water Quality View/Dissolved O2",
+                onclick_fn=lambda: _view("dissolved_oxygen"),
+            ),
+            MenuItemDescription(
+                name="Water Quality View/TAN",
+                onclick_fn=lambda: _view("tan"),
+            ),
+            MenuItemDescription(
+                name="Water Quality View/pH",
+                onclick_fn=lambda: _view("ph"),
+            ),
+            MenuItemDescription(
+                name="Water Quality View/CO2",
+                onclick_fn=lambda: _view("co2"),
+            ),
+            MenuItemDescription(
+                name="Water Quality Actions/Feed pulse 1 kg",
+                onclick_fn=_feed_pulse,
+            ),
+            MenuItemDescription(
+                name="Water Quality Actions/Biofilter ON",
+                onclick_fn=lambda: _biofilter(True),
+            ),
+            MenuItemDescription(
+                name="Water Quality Actions/Biofilter OFF",
+                onclick_fn=lambda: _biofilter(False),
+            ),
+            MenuItemDescription(
+                name="Water Quality Actions/Scenario baseline",
+                onclick_fn=lambda: _scenario("baseline"),
+            ),
+            MenuItemDescription(
+                name="Water Quality Actions/Scenario overfeed",
+                onclick_fn=lambda: _scenario("overfeed"),
+            ),
+            MenuItemDescription(
+                name="Water Quality Actions/Scenario pump off",
+                onclick_fn=lambda: _scenario("pump_off"),
+            ),
+            MenuItemDescription(
+                name="Water Quality Actions/Scenario high temp",
+                onclick_fn=lambda: _scenario("high_temp_spike"),
+            ),
+        ]
+        omni.kit.menu.utils.add_menu_items(self._aquacast_menu_items, name="Aquacast")
 
     async def __property_window(self):
         """Creates a propety window and sets column sizes."""
@@ -679,6 +903,9 @@ class CreateSetupExtension(omni.ext.IExt):
         """Clean up the extension"""
         self._dev_reload_sub = None
         if getattr(self, "_aquacast_main", None):
+            if self._water_quality_controller:
+                self._aquacast_main.stop_water_quality_controller()
+                self._water_quality_controller = None
             if self._water_temp_controller:
                 self._aquacast_main.stop_water_temp_controller()
                 self._water_temp_controller = None
@@ -692,9 +919,16 @@ class CreateSetupExtension(omni.ext.IExt):
         self._sub_fabric_delegate_changed = None
         self._sensor_update_sub = None
         self._sensor_window = None
+        self._wq_view_window = None
         if self._sensor_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._sensor_menu_items, "Window")
             self._sensor_menu_items = []
+        if self._wq_view_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._wq_view_menu_items, "Window")
+            self._wq_view_menu_items = []
+        if self._aquacast_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._aquacast_menu_items, "Aquacast")
+            self._aquacast_menu_items = []
 
         omni.kit.menu.utils.remove_layout(self._menu_layout)
         self._menu_layout = None

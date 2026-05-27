@@ -1,0 +1,10 @@
+services:
+  water-quality-backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    image: aquacast-water-quality-backend:local
+    ports:
+      - "8765:8765"
+    environment:
+      AQUACAST_WQ_SCENARIO: baseline

@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import importlib.util
 import json
 import math
@@ -7,12 +8,21 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import fish_dynamics  # noqa: E402
 import thermal_dynamics  # noqa: E402
+import water_quality_backend_client  # noqa: E402
+import water_quality_dynamics  # noqa: E402
+import water_quality_model  # noqa: E402
+
+water_quality_backend_client = importlib.reload(water_quality_backend_client)
+water_quality_dynamics = importlib.reload(water_quality_dynamics)
+water_quality_model = importlib.reload(water_quality_model)
 
 import carb  # noqa: E402
 import omni.kit.app  # noqa: E402
@@ -22,6 +32,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, Vt  # noqa: E402
 _stage_structure_cache = None
 _fish_swim_controller = None
 _water_temp_controller = None
+_water_quality_controller = None
 
 
 def should_print_stage_topology():
@@ -94,11 +105,29 @@ def start_water_temp_controller():
     return _water_temp_controller
 
 
+def start_water_quality_controller():
+    global _water_quality_controller
+    if _water_quality_controller is None:
+        enabled = bool(get_global_config("ENABLE_WATER_QUALITY", get_global_config("ENABLE_WATER_QUALITY_SIM", False)))
+        if not enabled:
+            return None
+        _water_quality_controller = WaterQualityController()
+        _water_quality_controller.start()
+    return _water_quality_controller
+
+
 def stop_water_temp_controller():
     global _water_temp_controller
     if _water_temp_controller is not None:
         _water_temp_controller.stop()
         _water_temp_controller = None
+
+
+def stop_water_quality_controller():
+    global _water_quality_controller
+    if _water_quality_controller is not None:
+        _water_quality_controller.stop()
+        _water_quality_controller = None
 
 
 def water_temp_controller_inflow_state():
@@ -116,6 +145,73 @@ def sample_water_temp_sensor(sensor_path=None, radius=None):
     if _water_temp_controller is None:
         return {"status": "water temperature controller is not running"}
     return _water_temp_controller.sample_temperature_sensor(sensor_path, radius)
+
+
+def sample_water_quality_sensor(sensor_name=None):
+    if _water_quality_controller is None:
+        return {"status": "water quality controller is not running"}
+    return _water_quality_controller.sample_sensor(sensor_name)
+
+
+def sample_quality_sensor(sensor_path=None):
+    return sample_water_quality_sensor(sensor_path)
+
+
+def sample_all_water_quality_sensors():
+    if _water_quality_controller is None:
+        return {"status": "water quality controller is not running", "readings": []}
+    return {"status": "ok", "readings": _water_quality_controller.sample_all_sensors()}
+
+
+def apply_feed(mass_kg):
+    if _water_quality_controller is not None:
+        _water_quality_controller.apply_feed(mass_kg)
+
+
+def set_water_exchange(q_lph):
+    if _water_quality_controller is not None:
+        _water_quality_controller.set_water_exchange(q_lph)
+
+
+def set_inflow(enabled):
+    if _water_quality_controller is not None:
+        _water_quality_controller.set_inflow(enabled)
+    if _water_temp_controller is not None:
+        current = _water_temp_controller.is_inflow_enabled()
+        if bool(current) != bool(enabled):
+            _water_temp_controller.toggle_inflow()
+
+
+def set_heater(power):
+    if _water_quality_controller is not None:
+        _water_quality_controller.set_heater(power)
+
+
+def set_biofilter(enabled):
+    if _water_quality_controller is not None:
+        _water_quality_controller.set_biofilter(enabled)
+
+
+def set_stock(n, w_kg):
+    if _water_quality_controller is not None:
+        _water_quality_controller.set_stock(n, w_kg)
+
+
+def load_scenario(name):
+    if _water_quality_controller is None:
+        return False
+    return _water_quality_controller.load_scenario(name)
+
+
+def get_quality_snapshot():
+    if _water_quality_controller is None:
+        return {"status": "water quality controller is not running"}
+    return _water_quality_controller.snapshot()
+
+
+def set_quality_view_variable(variable):
+    if _water_quality_controller is not None:
+        _water_quality_controller.set_view_variable(variable)
 
 
 def get_stage_structure():
@@ -383,6 +479,7 @@ class FishSwimController:
     """Animate numbered Fish prims inside the Water cylinder."""
 
     def __init__(self):
+        self._active = False
         self._stage_event_sub = None
         self._update_sub = None
         self._last_update_time = None
@@ -396,6 +493,7 @@ class FishSwimController:
         self._next_init_retry_time = 0.0
 
     def start(self):
+        self._active = True
         usd_context = omni.usd.get_context()
         self._stage_event_sub = usd_context.get_stage_event_stream().create_subscription_to_pop(
             self._on_stage_event,
@@ -931,6 +1029,7 @@ class WaterTempController:
     """Drive bulk water temperature and runtime temperature particle visualization."""
 
     def __init__(self):
+        self._active = False
         self._stage_event_sub = None
         self._update_sub = None
         self._initialized = False
@@ -955,6 +1054,8 @@ class WaterTempController:
         self._water_prim = None
         self._particles_prim = None
         self._particle_color_attr = None
+        self._particle_display_color_attr = None
+        self._particle_display_color_attrs = []
         self._particle_temperature_attr = None
         self._particle_heat_weights = []
         self._particle_positions = []
@@ -964,6 +1065,7 @@ class WaterTempController:
         self._warned_missing_water = False
 
     def start(self):
+        self._active = True
         usd_context = omni.usd.get_context()
         self._stage_event_sub = usd_context.get_stage_event_stream().create_subscription_to_pop(
             self._on_stage_event,
@@ -973,9 +1075,11 @@ class WaterTempController:
             self._on_update,
             name="aquacast_water_temp_update",
         )
-        asyncio.ensure_future(self._initialize_after_frames(3))
+        for frames in (1, 3, 10, 30):
+            asyncio.ensure_future(self._initialize_after_frames(frames))
 
     def stop(self):
+        self._active = False
         self._stage_event_sub = None
         self._update_sub = None
         self._isosurface_prim = None
@@ -983,6 +1087,8 @@ class WaterTempController:
         self._water_prim = None
         self._particles_prim = None
         self._particle_color_attr = None
+        self._particle_display_color_attr = None
+        self._particle_display_color_attrs = []
         self._particle_temperature_attr = None
         self._particle_heat_weights = []
         self._particle_positions = []
@@ -993,9 +1099,13 @@ class WaterTempController:
         app = omni.kit.app.get_app()
         for _ in range(frames):
             await app.next_update_async()
+            if not getattr(self, "_active", True):
+                return
         self._initialize()
 
     def _initialize(self):
+        if not getattr(self, "_active", True):
+            return
         if not bool(get_global_config("ENABLE_WATER_TEMP_VIS", False)):
             self._initialized = False
             self._isosurface_prim = None
@@ -1003,6 +1113,8 @@ class WaterTempController:
             self._water_prim = None
             self._particles_prim = None
             self._particle_color_attr = None
+            self._particle_display_color_attr = None
+            self._particle_display_color_attrs = []
             self._particle_temperature_attr = None
             return
 
@@ -1055,6 +1167,8 @@ class WaterTempController:
             self._water_prim = None
             self._particles_prim = None
             self._particle_color_attr = None
+            self._particle_display_color_attr = None
+            self._particle_display_color_attrs = []
             self._particle_temperature_attr = None
             self._particle_positions = []
             self._particle_heat_weights = []
@@ -1062,12 +1176,21 @@ class WaterTempController:
 
         self._warned_missing_water = False
         self._water_prim = water_prim
+        if (
+            self._particles_prim
+            and self._particles_prim.IsValid()
+            and self._particle_color_attr is not None
+            and self._particle_heat_weights
+        ):
+            return
         try:
             self._author_temperature_particles(stage, water_prim)
         except Exception as exc:
             carb.log_warn(f"[Aquacast Temp] Failed to author temperature particles: {exc}")
             self._particles_prim = None
             self._particle_color_attr = None
+            self._particle_display_color_attr = None
+            self._particle_display_color_attrs = []
             self._particle_temperature_attr = None
             self._particle_positions = []
             self._particle_heat_weights = []
@@ -1159,6 +1282,19 @@ class WaterTempController:
             if prim and prim.IsValid():
                 return prim
 
+        configured_name = str(get_global_config("TEMP_SENSOR_PRIM_NAME", "") or "").strip()
+        if not configured_name and configured:
+            configured_name = Path(configured).name
+        if configured_name:
+            for path in _get_topology_paths_by_name(configured_name):
+                prim = stage.GetPrimAtPath(path)
+                if prim and prim.IsValid():
+                    return prim
+
+            for prim in stage.Traverse():
+                if prim and prim.IsValid() and prim.GetName() == configured_name:
+                    return prim
+
         for path in _get_topology_paths_by_name("Sensor"):
             prim = stage.GetPrimAtPath(path)
             if prim and prim.IsValid():
@@ -1198,7 +1334,7 @@ class WaterTempController:
 
     def _schedule_init_retry(self):
         retry = float(get_global_config("TEMP_VIS_INIT_RETRY_SECONDS", 1.0))
-        self._next_init_retry_time = time.time() + max(0.1, retry)
+        self._next_init_retry_time = time.time() + max(0.05, retry)
 
     def _warn_missing_isosurface_once(self):
         if self._warned_missing_isosurface:
@@ -1320,37 +1456,47 @@ class WaterTempController:
                 weight = _smoothstep(0.72, 1.0, radial_norm)
             heat_weights.append(max(0.0, min(1.0, weight)))
 
+        width = float(get_global_config("TEMP_PARTICLE_WIDTH", max(0.01, radius * 0.025)))
+
         particle_path = self._temperature_particle_path(water_prim)
         session_layer = stage.GetSessionLayer()
         edit_target = session_layer if session_layer is not None else stage.GetRootLayer()
+        cyan = Gf.Vec3f(*thermal_dynamics.temperature_to_rgb(
+            self._T,
+            self._sorted_stops(get_global_config("TEMP_COLOR_STOPS", [])),
+        ))
+        display_attrs = []
         with Usd.EditContext(stage, edit_target):
-            points = UsdGeom.Points.Define(stage, particle_path)
-            points.CreatePointsAttr(Vt.Vec3fArray(positions))
-            width = float(get_global_config("TEMP_PARTICLE_WIDTH", max(0.01, radius * 0.025)))
-            points.CreateWidthsAttr(Vt.FloatArray([width] * count))
-            prim = points.GetPrim()
-            primvars_api = UsdGeom.PrimvarsAPI(prim)
-            color_pv = primvars_api.CreatePrimvar(
-                "displayColor",
-                Sdf.ValueTypeNames.Color3fArray,
-                UsdGeom.Tokens.vertex,
-            )
-            temp_pv = primvars_api.CreatePrimvar(
-                "temperature",
-                Sdf.ValueTypeNames.FloatArray,
-                UsdGeom.Tokens.vertex,
-            )
+            if stage.GetPrimAtPath(particle_path).IsValid():
+                stage.RemovePrim(particle_path)
+            container = UsdGeom.Xform.Define(stage, particle_path)
+            container.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
+            container.CreatePurposeAttr(UsdGeom.Tokens.default_)
+            for index, pos in enumerate(positions):
+                sphere_path = particle_path.AppendChild(f"P_{index:04d}")
+                sphere = UsdGeom.Sphere.Define(stage, sphere_path)
+                sphere.CreateRadiusAttr(width)
+                sphere.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
+                sphere.CreatePurposeAttr(UsdGeom.Tokens.default_)
+                color_attr = sphere.CreateDisplayColorAttr(Vt.Vec3fArray([cyan]))
+                sphere.CreateDisplayOpacityAttr(Vt.FloatArray([1.0]))
+                xformable = UsdGeom.Xformable(sphere.GetPrim())
+                translate_op = xformable.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble)
+                translate_op.Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+                display_attrs.append(color_attr)
 
-        self._particles_prim = points.GetPrim()
-        self._particle_color_attr = color_pv.GetAttr()
-        self._particle_temperature_attr = temp_pv.GetAttr()
+        self._particles_prim = stage.GetPrimAtPath(particle_path)
+        self._particle_color_attr = display_attrs[0] if display_attrs else None
+        self._particle_display_color_attr = self._particle_color_attr
+        self._particle_display_color_attrs = display_attrs
+        self._particle_temperature_attr = None
         self._particle_positions = positions
         self._particle_heat_weights = heat_weights
         self._last_particle_update_time = 0.0
         self._particle_elapsed = 0.0
         self._write_particle_samples(stage, force=True)
         carb.log_info(
-            f"[Aquacast Temp] Authored {count} temperature particles at {particle_path} "
+            f"[Aquacast Temp] Authored {count} visible temperature spheres at {particle_path} "
             f"inside water={water_prim.GetPath()}"
         )
 
@@ -1369,6 +1515,9 @@ class WaterTempController:
         stops = self._sorted_stops(get_global_config("TEMP_COLOR_STOPS", []))
         if not stops:
             return
+        sphere_color_attrs = getattr(self, "_particle_display_color_attrs", []) or []
+        water_quality_drives_color = bool(get_global_config("ENABLE_WATER_QUALITY", get_global_config("ENABLE_WATER_QUALITY_SIM", False)))
+        write_temperature_color = force or not water_quality_drives_color
         heat_delta = float(get_global_config("TEMP_PARTICLE_HEAT_DELTA_C", 42.0))
         spread_rate = float(get_global_config("TEMP_PARTICLE_SPREAD_RATE", 0.05))
         spread = 1.0 - math.exp(-max(0.0, self._particle_elapsed) * max(0.0, spread_rate))
@@ -1377,18 +1526,33 @@ class WaterTempController:
         for weight in self._particle_heat_weights:
             temp = self._T + heat_delta * weight * spread
             temperatures.append(float(temp))
-            colors.append(Gf.Vec3f(*thermal_dynamics.temperature_to_rgb(temp, stops)))
+            if write_temperature_color:
+                colors.append(Gf.Vec3f(*thermal_dynamics.temperature_to_rgb(temp, stops)))
         self._particle_temperatures = temperatures
 
         try:
             session_layer = stage.GetSessionLayer()
             if session_layer is not None:
                 with Usd.EditContext(stage, session_layer):
-                    self._particle_color_attr.Set(Vt.Vec3fArray(colors))
+                    if write_temperature_color:
+                        if sphere_color_attrs:
+                            for attr, color in zip(sphere_color_attrs, colors):
+                                attr.Set(Vt.Vec3fArray([color]))
+                        else:
+                            self._particle_color_attr.Set(Vt.Vec3fArray(colors))
+                            if self._particle_display_color_attr is not None:
+                                self._particle_display_color_attr.Set(Vt.Vec3fArray(colors))
                     if self._particle_temperature_attr is not None:
                         self._particle_temperature_attr.Set(Vt.FloatArray(temperatures))
             else:
-                self._particle_color_attr.Set(Vt.Vec3fArray(colors))
+                if write_temperature_color:
+                    if sphere_color_attrs:
+                        for attr, color in zip(sphere_color_attrs, colors):
+                            attr.Set(Vt.Vec3fArray([color]))
+                    else:
+                        self._particle_color_attr.Set(Vt.Vec3fArray(colors))
+                        if self._particle_display_color_attr is not None:
+                            self._particle_display_color_attr.Set(Vt.Vec3fArray(colors))
                 if self._particle_temperature_attr is not None:
                     self._particle_temperature_attr.Set(Vt.FloatArray(temperatures))
         except Exception as exc:
@@ -1470,6 +1634,8 @@ class WaterTempController:
         return self._color_stops_sorted
 
     def _on_update(self, _event):
+        if not getattr(self, "_active", True):
+            return
         now = time.time()
 
         if not self._initialized:
@@ -1539,6 +1705,8 @@ class WaterTempController:
             self._water_prim = None
             self._particles_prim = None
             self._particle_color_attr = None
+            self._particle_display_color_attr = None
+            self._particle_display_color_attrs = []
             self._particle_temperature_attr = None
             self._particle_positions = []
             self._particle_heat_weights = []
@@ -1551,10 +1719,12 @@ class WaterTempController:
             self._next_init_retry_time = 0.0
             self._warned_missing_isosurface = False
             self._warned_missing_water = False
-            asyncio.ensure_future(self._initialize_after_frames(3))
+            for frames in (1, 3, 10, 30):
+                asyncio.ensure_future(self._initialize_after_frames(frames))
         elif event_type == int(omni.usd.StageEventType.ASSETS_LOADED):
             if not self._initialized:
-                asyncio.ensure_future(self._initialize_after_frames(3))
+                for frames in (1, 3, 10):
+                    asyncio.ensure_future(self._initialize_after_frames(frames))
         elif event_type == int(omni.usd.StageEventType.CLOSED):
             self._initialized = False
             self._isosurface_prim = None
@@ -1562,6 +1732,8 @@ class WaterTempController:
             self._water_prim = None
             self._particles_prim = None
             self._particle_color_attr = None
+            self._particle_display_color_attr = None
+            self._particle_display_color_attrs = []
             self._particle_temperature_attr = None
             self._particle_positions = []
             self._particle_heat_weights = []
@@ -1572,6 +1744,443 @@ class WaterTempController:
             self._next_init_retry_time = 0.0
             self._warned_missing_isosurface = False
             self._warned_missing_water = False
+
+
+class WaterQualityController:
+    """Drive water-quality state and expose sensor/particle scalar fields."""
+
+    _PARTICLE_PRIMVAR_NAMES = {
+        "temperature": "temperature",
+        "dissolved_oxygen": "dissolved_oxygen",
+        "tan": "tan",
+        "co2": "co2",
+        "alkalinity": "alkalinity",
+        "ph": "ph",
+        "nh3": "nh3",
+    }
+
+    def __init__(self):
+        self._active = False
+        self._update_sub = None
+        self._model = None
+        self._last_update_time = None
+        self._last_log_time = 0.0
+        self._last_particle_write_time = 0.0
+        self._last_particle_field_write_time = 0.0
+        self._next_load_retry_time = 0.0
+        self._particle_primvars = {}
+        self._display_color_attr = None
+        self._sphere_color_attrs = []
+        self._view_variable_override = None
+        self._using_backend = False
+
+    def start(self):
+        self._active = True
+        self._load_model()
+        self._update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+            self._on_update,
+            name="aquacast_water_quality_update",
+        )
+
+    def stop(self):
+        self._active = False
+        self._update_sub = None
+        self._model = None
+        self._particle_primvars = {}
+        self._display_color_attr = None
+        self._sphere_color_attrs = []
+        self._last_update_time = None
+
+    def sample_sensor(self, sensor_name=None):
+        if self._model is None:
+            return {"status": "water quality model is not ready"}
+        name = str(sensor_name or get_global_config("WQ_DEFAULT_SENSOR_NAME", "mixed_tank_outlet") or "").strip()
+        if "/" in name:
+            name = Path(name).name
+        if not name:
+            name = "mixed_tank_outlet"
+        reading = self._model.sensor_reading(name).as_dict()
+        reading["status"] = "ok"
+        reading["sensor_path"] = self._sensor_path_for_name(name)
+        return reading
+
+    def sample_all_sensors(self):
+        names = get_global_config("WQ_SENSOR_PRIM_NAMES", list(water_quality_model.DEFAULT_SENSOR_NAMES))
+        return [self.sample_sensor(name) for name in names]
+
+    def snapshot(self):
+        if self._model is None:
+            return {"status": "water quality model is not ready"}
+        snap = self._model.snapshot()
+        snap["status"] = "ok"
+        snap["view_variable"] = self._view_variable()
+        return snap
+
+    def apply_feed(self, mass_kg):
+        if self._model is not None:
+            self._model.apply_feed(mass_kg)
+
+    def set_water_exchange(self, q_lph):
+        if self._model is not None:
+            self._model.set_water_exchange(q_lph)
+
+    def set_inflow(self, enabled):
+        if self._model is not None:
+            self._model.set_inflow(enabled)
+
+    def set_heater(self, power):
+        if self._model is not None:
+            self._model.set_heater(power)
+
+    def set_biofilter(self, enabled):
+        if self._model is not None:
+            self._model.set_biofilter(enabled)
+
+    def set_stock(self, n, w_kg):
+        if self._model is not None:
+            self._model.set_stock(n, w_kg)
+
+    def load_scenario(self, name):
+        if self._model is None:
+            return False
+        loaded = self._model.load_scenario(str(name))
+        if loaded:
+            carb.log_info(f"[Aquacast WQ] Loaded scenario={name}")
+        return loaded
+
+    def set_view_variable(self, variable):
+        value = str(variable or "").strip().lower()
+        aliases = {
+            "do": "dissolved_oxygen",
+            "dissolved_o2": "dissolved_oxygen",
+            "oxygen": "dissolved_oxygen",
+            "alk": "alkalinity",
+        }
+        value = aliases.get(value, value)
+        if value in self._PARTICLE_PRIMVAR_NAMES:
+            self._view_variable_override = value
+            self._last_particle_write_time = 0.0
+            carb.log_info(f"[Aquacast WQ] View variable={value}")
+
+    def _load_model(self):
+        base = Path(__file__).resolve().parent
+        constants_path = Path(get_global_config("WQ_CONSTANTS_JSON_PATH", str(base / "data" / "wq_constants.json")))
+        feed_rate_path = Path(get_global_config("WQ_FEED_RATE_JSON_PATH", str(base / "data" / "wq_feed_rate.json")))
+        scenarios_path = Path(get_global_config("WQ_SCENARIOS_JSON_PATH", str(base / "data" / "wq_scenarios.json")))
+        scenario_name = str(get_global_config("WQ_SCENARIO_NAME", "baseline") or "baseline")
+        try:
+            if bool(get_global_config("WQ_BACKEND_ENABLED", False)):
+                backend_url = str(get_global_config("WQ_BACKEND_URL", "http://127.0.0.1:8765") or "http://127.0.0.1:8765")
+                timeout_s = float(get_global_config("WQ_BACKEND_TIMEOUT_SECONDS", 0.25))
+                client = water_quality_backend_client.WaterQualityBackendClient(backend_url, timeout_s=timeout_s)
+                client.health()
+                if bool(get_global_config("WQ_BACKEND_RESET_ON_CONNECT", False)):
+                    client.reset(scenario_name)
+                self._model = client
+                self._using_backend = True
+                carb.log_info(f"[Aquacast WQ] Connected to backend={backend_url}")
+            else:
+                self._model = water_quality_model.load_model(constants_path, feed_rate_path, scenarios_path, scenario_name)
+                self._apply_global_overrides()
+                self._using_backend = False
+                carb.log_info(f"[Aquacast WQ] Initialized scenario={scenario_name}")
+        except Exception as exc:
+            self._model = None
+            self._using_backend = False
+            self._next_load_retry_time = time.time() + 1.0
+            carb.log_warn(f"[Aquacast WQ] Failed to load water quality model: {exc}")
+
+    def _apply_global_overrides(self):
+        if self._model is None:
+            return
+        params = self._model.params
+        overrides = {
+            "time_scale": "WQ_TIME_SCALE",
+            "substep_h": "WQ_SUBSTEP_H",
+            "tank_volume_l": "WQ_TANK_VOLUME_L",
+            "fish_count": "WQ_FISH_COUNT",
+            "fish_weight_kg": "WQ_FISH_WEIGHT_KG",
+            "flow_lph": "WQ_FLOW_LPH",
+            "protein_content": "WQ_PROTEIN_CONTENT",
+            "kla_o2_h": "WQ_KLA_O2",
+            "kla_co2_h": "WQ_KLA_CO2",
+            "k_nitrif_h": "WQ_K_NITRIF",
+            "vtr_max_mg_l_h": "WQ_VTR_MAX",
+            "tau_feed_h": "WQ_TAU_FEED_H",
+            "do_maxFI": "WQ_DO_MAXFI",
+            "do_zero": "WQ_DO_ZERO",
+            "do_in": "WQ_DO_IN",
+            "co2_eq": "WQ_CO2_EQ",
+            "alk_in": "WQ_ALK_IN",
+            "biofilter_on": "WQ_BIOFILTER_DEFAULT",
+        }
+        for param_name, config_name in overrides.items():
+            value = get_global_config(config_name, None)
+            if value is not None:
+                params[param_name] = value
+        state = self._model.state
+        state.dissolved_oxygen_mg_l = float(get_global_config("WQ_INIT_DO", state.dissolved_oxygen_mg_l))
+        state.tan_mg_l = float(get_global_config("WQ_INIT_TAN", state.tan_mg_l))
+        state.co2_mg_l = float(get_global_config("WQ_INIT_CO2", state.co2_mg_l))
+        state.alkalinity_mg_l_as_caco3 = float(get_global_config("WQ_INIT_ALK", state.alkalinity_mg_l_as_caco3))
+
+    def _on_update(self, _event):
+        if not self._active:
+            return
+        if self._model is None:
+            if time.time() < self._next_load_retry_time:
+                return
+            self._load_model()
+            if self._model is None:
+                return
+
+        now = time.time()
+        if self._last_update_time is None:
+            self._last_update_time = now
+            return
+
+        interval = max(0.05, float(get_global_config("WQ_UPDATE_INTERVAL_SECONDS", 0.5)))
+        if now - self._last_update_time < interval:
+            return
+
+        dt = min(now - self._last_update_time, 5.0)
+        self._last_update_time = now
+        if self._model is not None:
+            inflow_enabled = self._current_inflow_enabled()
+            if hasattr(self._model, "params"):
+                self._model.params["inflow_enabled"] = inflow_enabled
+            elif hasattr(self._model, "set_inflow"):
+                self._model.set_inflow(inflow_enabled)
+        state = self._model.advance(dt, temperature_c=self._current_temperature_c())
+
+        stage = omni.usd.get_context().get_stage()
+        if stage is not None and bool(get_global_config("WQ_WRITE_PARTICLE_PRIMVARS", True)):
+            self._write_particle_primvars(stage, now)
+        self._maybe_log(now, state)
+
+    def _current_temperature_c(self):
+        controller = globals().get("_water_temp_controller")
+        if controller is not None and hasattr(controller, "_T"):
+            try:
+                return float(controller._T)
+            except Exception:
+                pass
+        return float(get_global_config("INITIAL_WATER_TEMP_C", 14.0))
+
+    def _current_inflow_enabled(self):
+        controller = globals().get("_water_temp_controller")
+        if controller is not None and hasattr(controller, "is_inflow_enabled"):
+            try:
+                return bool(controller.is_inflow_enabled())
+            except Exception:
+                pass
+        return True
+
+    def _write_particle_primvars(self, stage, now):
+        update_interval = float(get_global_config("WQ_PARTICLE_UPDATE_INTERVAL_SECONDS", 1.0))
+        if update_interval > 0.0 and now - self._last_particle_write_time < update_interval:
+            return
+        field_interval = float(get_global_config("WQ_PARTICLE_FIELD_UPDATE_INTERVAL_SECONDS", 0.5))
+        write_all_fields = now - self._last_particle_field_write_time >= max(0.0, field_interval)
+
+        temp_controller = globals().get("_water_temp_controller")
+        if temp_controller is None:
+            return
+        heat_weights = getattr(temp_controller, "_particle_heat_weights", None) or []
+        positions = getattr(temp_controller, "_particle_positions", None) or []
+        if not heat_weights:
+            return
+
+        particle_path = str(get_global_config("TEMP_PARTICLE_PRIM_PATH", "") or "")
+        prim = stage.GetPrimAtPath(particle_path) if particle_path else None
+        if not prim or not prim.IsValid():
+            return
+
+        if not self._particle_primvars and not self._sphere_color_attrs and self._display_color_attr is None:
+            self._bind_particle_primvars(stage, prim)
+        if not self._particle_primvars and not self._sphere_color_attrs and self._display_color_attr is None:
+            return
+
+        values = self._model.particle_values(heat_weights, positions)
+        temperature_values = self._temperature_particle_values(temp_controller, len(heat_weights))
+        if temperature_values:
+            values["temperature"] = temperature_values
+        elif self._view_variable() == "temperature":
+            return
+        display_colors = self._display_colors(values)
+        session_layer = stage.GetSessionLayer()
+        try:
+            edit_context = Usd.EditContext(stage, session_layer) if session_layer is not None else None
+            if edit_context is not None:
+                edit_context.__enter__()
+            try:
+                if write_all_fields:
+                    if self._particle_primvars:
+                        for key, attr in self._particle_primvars.items():
+                            field = values.get(key)
+                            if field:
+                                attr.Set(Vt.FloatArray(field))
+                    self._last_particle_field_write_time = now
+                if display_colors:
+                    if self._sphere_color_attrs:
+                        for attr, color in zip(self._sphere_color_attrs, display_colors):
+                            attr.Set(Vt.Vec3fArray([color]))
+                    elif self._display_color_attr is not None:
+                        self._display_color_attr.Set(Vt.Vec3fArray(display_colors))
+            finally:
+                if edit_context is not None:
+                    edit_context.__exit__(None, None, None)
+        except Exception as exc:
+            carb.log_warn(f"[Aquacast WQ] Failed to write particle primvars: {exc}")
+            self._particle_primvars = {}
+            self._display_color_attr = None
+            self._sphere_color_attrs = []
+            return
+        self._last_particle_write_time = now
+
+    def _temperature_particle_values(self, temp_controller, expected_count):
+        temperatures = getattr(temp_controller, "_particle_temperatures", None) or []
+        if len(temperatures) == expected_count:
+            return [float(value) for value in temperatures]
+
+        heat_weights = getattr(temp_controller, "_particle_heat_weights", None) or []
+        if len(heat_weights) != expected_count:
+            return []
+        try:
+            bulk_t = float(getattr(temp_controller, "_T", get_global_config("INITIAL_WATER_TEMP_C", 14.0)))
+            elapsed = float(getattr(temp_controller, "_particle_elapsed", 0.0))
+            heat_delta = float(get_global_config("TEMP_PARTICLE_HEAT_DELTA_C", 0.0))
+            spread_rate = float(get_global_config("TEMP_PARTICLE_SPREAD_RATE", 0.05))
+            spread = 1.0 - math.exp(-max(0.0, elapsed) * max(0.0, spread_rate))
+            return [bulk_t + heat_delta * float(weight) * spread for weight in heat_weights]
+        except Exception:
+            return []
+
+    def _bind_particle_primvars(self, stage, prim):
+        try:
+            session_layer = stage.GetSessionLayer()
+            edit_context = Usd.EditContext(stage, session_layer) if session_layer is not None else None
+            if edit_context is not None:
+                edit_context.__enter__()
+            try:
+                sphere_attrs = []
+                for child in prim.GetChildren():
+                    if child and child.IsValid() and child.GetTypeName() == "Sphere":
+                        color_attr = UsdGeom.Sphere(child).CreateDisplayColorAttr()
+                        sphere_attrs.append(color_attr)
+                self._sphere_color_attrs = sphere_attrs
+                if sphere_attrs:
+                    self._particle_primvars = {}
+                    self._display_color_attr = None
+                    return
+
+                primvars_api = UsdGeom.PrimvarsAPI(prim)
+                self._particle_primvars = {
+                    key: primvars_api.CreatePrimvar(
+                        name,
+                        Sdf.ValueTypeNames.FloatArray,
+                        UsdGeom.Tokens.vertex,
+                    ).GetAttr()
+                    for key, name in self._PARTICLE_PRIMVAR_NAMES.items()
+                }
+                self._display_color_attr = primvars_api.CreatePrimvar(
+                    "displayColor",
+                    Sdf.ValueTypeNames.Color3fArray,
+                    UsdGeom.Tokens.vertex,
+                ).GetAttr()
+            finally:
+                if edit_context is not None:
+                    edit_context.__exit__(None, None, None)
+        except Exception as exc:
+            carb.log_warn(f"[Aquacast WQ] Failed to bind particle primvars: {exc}")
+            self._particle_primvars = {}
+            self._display_color_attr = None
+            self._sphere_color_attrs = []
+
+    def _display_colors(self, values):
+        view = self._view_variable()
+        field = values.get(view) or values.get("temperature") or []
+        if not field:
+            return []
+        stops = self._color_stops_for_view(view)
+        if not stops:
+            stops = self._color_stops_for_view("temperature")
+        return self._ramp_colors(field, stops)
+
+    def _ramp_colors(self, field, stops):
+        if not stops:
+            return []
+        values = np.asarray(field, dtype=np.float64)
+        stop_values = np.asarray([float(stop[0]) for stop in stops], dtype=np.float64)
+        stop_colors = np.asarray([stop[1] for stop in stops], dtype=np.float64)
+        if len(stop_values) == 1:
+            rgb = np.repeat(stop_colors[:1], len(values), axis=0)
+        else:
+            rgb = np.column_stack(
+                [
+                    np.interp(values, stop_values, stop_colors[:, channel])
+                    for channel in range(3)
+                ]
+            )
+        rgb = np.clip(rgb, 0.0, 1.0)
+        return [Gf.Vec3f(float(row[0]), float(row[1]), float(row[2])) for row in rgb]
+
+    def _view_variable(self):
+        configured = self._view_variable_override
+        value = str(configured or get_global_config("WQ_VIEW_VARIABLE", "temperature") or "temperature").strip().lower()
+        aliases = {
+            "do": "dissolved_oxygen",
+            "dissolved_o2": "dissolved_oxygen",
+            "oxygen": "dissolved_oxygen",
+            "alk": "alkalinity",
+        }
+        value = aliases.get(value, value)
+        if value not in self._PARTICLE_PRIMVAR_NAMES:
+            return "temperature"
+        return value
+
+    def _color_stops_for_view(self, view):
+        config_name = {
+            "temperature": "TEMP_COLOR_STOPS",
+            "dissolved_oxygen": "DO_COLOR_STOPS",
+            "tan": "TAN_COLOR_STOPS",
+            "co2": "CO2_COLOR_STOPS",
+            "ph": "PH_COLOR_STOPS",
+            "alkalinity": "ALK_COLOR_STOPS",
+            "nh3": "NH3_COLOR_STOPS",
+        }.get(view, "TEMP_COLOR_STOPS")
+        try:
+            return sorted(get_global_config(config_name, []) or [], key=lambda stop: stop[0])
+        except Exception:
+            return []
+
+    def _sensor_path_for_name(self, sensor_name):
+        for path in _get_topology_paths_by_name(sensor_name):
+            return path
+        suffix = f"/{sensor_name}"
+        stage = omni.usd.get_context().get_stage()
+        if stage is not None:
+            for prim in stage.Traverse():
+                if prim and prim.IsValid() and prim.GetPath().pathString.endswith(suffix):
+                    return prim.GetPath().pathString
+        return ""
+
+    def _maybe_log(self, now, state):
+        interval = float(get_global_config("WQ_LOG_INTERVAL_SECONDS", 5.0))
+        if interval <= 0.0 or now - self._last_log_time < interval:
+            return
+        self._last_log_time = now
+        snapshot = self._model.snapshot() if self._model is not None else state.as_dict()
+        carb.log_info(
+            f"[Aquacast WQ] sim_h={snapshot.get('sim_time_h', 0.0):.2f}, "
+            f"T={snapshot.get('temperature_c', 0.0):.2f} C, "
+            f"DO={snapshot.get('dissolved_oxygen_mg_l', 0.0):.2f} mg/L, "
+            f"TAN={snapshot.get('tan_mg_l', 0.0):.3f} mg/L, "
+            f"CO2={snapshot.get('co2_mg_l', 0.0):.2f} mg/L, "
+            f"Alk={snapshot.get('alkalinity_mg_l_as_caco3', 0.0):.1f} mg/L, "
+            f"pH={snapshot.get('ph', 0.0):.2f}, NH3={snapshot.get('nh3_mg_l', 0.0):.4f} mg/L, "
+            f"view={self._view_variable()}"
+        )
 
 
 if __name__ == "__main__":
