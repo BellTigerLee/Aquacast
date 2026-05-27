@@ -1,0 +1,69 @@
+{
+  "baseline": {
+    "initial_state": {
+      "temperature_c": 14.0,
+      "dissolved_oxygen_mg_l": 9.0,
+      "tan_mg_l": 0.3,
+      "co2_mg_l": 5.0,
+      "alkalinity_mg_l_as_caco3": 120.0,
+      "feed_pool_kg": 0.0
+    }
+  },
+  "normal": {
+    "initial_state": {
+      "temperature_c": 14.0,
+      "dissolved_oxygen_mg_l": 9.0,
+      "tan_mg_l": 0.3,
+      "co2_mg_l": 5.0,
+      "alkalinity_mg_l_as_caco3": 120.0,
+      "feed_pool_kg": 0.0
+    }
+  },
+  "high_temp_spike": {
+    "initial_state": {
+      "temperature_c": 22.0,
+      "dissolved_oxygen_mg_l": 7.2,
+      "tan_mg_l": 0.35,
+      "co2_mg_l": 6.5,
+      "alkalinity_mg_l_as_caco3": 116.0,
+      "feed_pool_kg": 0.2
+    }
+  },
+  "pump_off": {
+    "initial_state": {
+      "temperature_c": 14.0,
+      "dissolved_oxygen_mg_l": 8.4,
+      "tan_mg_l": 0.45,
+      "co2_mg_l": 8.0,
+      "alkalinity_mg_l_as_caco3": 112.0,
+      "feed_pool_kg": 0.2
+    },
+    "params": {
+      "inflow_enabled": false,
+      "flow_lph": 0.0
+    }
+  },
+  "biofilter_off": {
+    "initial_state": {
+      "temperature_c": 14.0,
+      "dissolved_oxygen_mg_l": 8.8,
+      "tan_mg_l": 0.6,
+      "co2_mg_l": 6.5,
+      "alkalinity_mg_l_as_caco3": 118.0,
+      "feed_pool_kg": 0.2
+    },
+    "params": {
+      "biofilter_on": false
+    }
+  },
+  "overfeed": {
+    "initial_state": {
+      "temperature_c": 14.0,
+      "dissolved_oxygen_mg_l": 8.6,
+      "tan_mg_l": 0.45,
+      "co2_mg_l": 7.0,
+      "alkalinity_mg_l_as_caco3": 115.0,
+      "feed_pool_kg": 2.5
+    }
+  }
+}

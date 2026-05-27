@@ -55,7 +55,7 @@ ENABLE_PARTICLE_SYSTEM_TEMP_COLOR = False
 
 ISOSURFACE_PRIM_PATH = "/Root/Group/ParticleSystem/Isosurface"
 TEMP_VIS_USE_STAGE_TOPOLOGY_JSON = True
-TEMP_VIS_INIT_RETRY_SECONDS = 1.0
+TEMP_VIS_INIT_RETRY_SECONDS = 0.2
 
 INITIAL_WATER_TEMP_C = 14.0
 INLET_WATER_TEMP_C = 14.0
@@ -66,9 +66,11 @@ INFLOW_ENABLED_DEFAULT = True
 
 TEMP_COLOR_STOPS = [
     (10.0, (0.05, 0.25, 1.00)),
-    (14.0, (0.00, 0.75, 0.75)),
-    (18.0, (0.90, 0.55, 0.20)),
-    (25.0, (1.00, 0.12, 0.12)),
+    (12.0, (0.05, 0.65, 1.00)),
+    (15.0, (0.00, 0.75, 0.75)),
+    (16.0, (0.85, 0.72, 0.10)),
+    (18.0, (1.00, 0.32, 0.05)),
+    (20.0, (1.00, 0.00, 0.00)),
 ]
 
 TEMP_VIS_LOG_INTERVAL_SECONDS = 5.0
@@ -77,20 +79,168 @@ TEMP_VIS_LOG_INTERVAL_SECONDS = 5.0
 ENABLE_WATER_TEMP_PARTICLES = True
 TEMP_PARTICLE_PRIM_PATH = "/Root/Group/TemperatureParticlesInsideWater"
 # Increase or decrease this to control how many runtime point particles are authored.
-TEMP_PARTICLE_COUNT = 8001
+TEMP_PARTICLE_COUNT = 1000
 TEMP_PARTICLE_RANDOM_SEED = 42
 TEMP_PARTICLE_RADIUS_RATIO = 0.94
 TEMP_PARTICLE_HEIGHT_RATIO = 0.94
 TEMP_PARTICLE_UP_AXIS = "Y"
-TEMP_PARTICLE_WIDTH = 0.8
+TEMP_PARTICLE_WIDTH = 1.2
+TEMP_PARTICLE_COLOR_BINS = 64
 TEMP_PARTICLE_HEATING_MODE = "side"
-TEMP_PARTICLE_HEAT_DELTA_C = 0.0
+TEMP_PARTICLE_HEAT_DELTA_C = 2.0
 TEMP_PARTICLE_SPREAD_RATE = 0.05
 TEMP_PARTICLE_UPDATE_INTERVAL_SECONDS = 0.12
 
-# Test UI that samples particle temperatures near a Sensor prim.
+# Test UI that samples particle temperatures near the inlet reference sensor prim.
 ENABLE_WATER_TEMP_SENSOR_UI = True
-TEMP_SENSOR_PRIM_PATH = "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/Sensor"
+TEMP_SENSOR_PRIM_PATH = "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/inlet_reference"
+TEMP_SENSOR_PRIM_NAME = "inlet_reference"
 TEMP_SENSOR_SAMPLE_RADIUS = 8.0
 TEMP_SENSOR_FALLBACK_NEAREST_COUNT = 16
 TEMP_SENSOR_UPDATE_INTERVAL_SECONDS = 0.5
+
+# Water quality simulation.
+ENABLE_WATER_QUALITY = True
+ENABLE_WATER_QUALITY_SIM = ENABLE_WATER_QUALITY
+WQ_ENABLE_NO2 = False
+WQ_CONSTANTS_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_constants.json"
+WQ_FEED_RATE_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_feed_rate.json"
+WQ_SCENARIOS_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_scenarios.json"
+WQ_SCENARIO_NAME = "baseline"
+WQ_BACKEND_ENABLED = True
+WQ_BACKEND_URL = "http://127.0.0.1:8765"
+WQ_BACKEND_TIMEOUT_SECONDS = 0.25
+WQ_BACKEND_RESET_ON_CONNECT = False
+WQ_TIME_SCALE = 1.0
+WQ_SUBSTEP_H = 0.0167
+WQ_INIT_DO = 9.0
+WQ_INIT_TAN = 0.3
+WQ_INIT_CO2 = 5.0
+WQ_INIT_ALK = 120.0
+WQ_TANK_VOLUME_L = 10000.0
+WQ_FISH_COUNT = 200
+WQ_FISH_WEIGHT_KG = 1.0
+WQ_FLOW_LPH = 2000.0
+WQ_PROTEIN_CONTENT = 0.45
+WQ_KLA_O2 = 2.0
+WQ_KLA_CO2 = 1.5
+WQ_K_NITRIF = 0.8
+WQ_VTR_MAX = 5.0
+WQ_TAU_FEED_H = 4.0
+WQ_DO_MAXFI = 7.0
+WQ_DO_ZERO = 3.0
+WQ_DO_IN = 9.0
+WQ_CO2_EQ = 0.5
+WQ_ALK_IN = 120.0
+WQ_BIOFILTER_DEFAULT = True
+WQ_UPDATE_INTERVAL_SECONDS = 0.12
+WQ_LOG_INTERVAL_SECONDS = 5.0
+WQ_WRITE_PARTICLE_PRIMVARS = True
+WQ_PARTICLE_UPDATE_INTERVAL_SECONDS = 0.12
+WQ_PARTICLE_FIELD_UPDATE_INTERVAL_SECONDS = 0.5
+WQ_VIEW_VARIABLE = "temperature"
+
+# Practical operating thresholds for salmon/RAS-style water-quality views.
+# Units match snapshot/sensor keys: degC, mg/L, pH, mg/L as CaCO3.
+WQ_THRESHOLDS = {
+    "temperature": {
+        "operating": (12.0, 15.0),
+        "warning": (16.0, 18.0),
+        "critical_high": 20.0,
+    },
+    "dissolved_oxygen": {
+        "operating_saturation_pct": (90.0, 100.0),
+        "warning_low_saturation_pct": 80.0,
+        "critical_low_saturation_pct": 40.0,
+        # Approximate mg/L equivalents near 12-15 C freshwater.
+        "warning_low_mg_l": 8.0,
+        "critical_low_mg_l": 4.0,
+    },
+    "ph": {
+        "operating": (6.0, 8.5),
+        "critical_low": 5.4,
+        "critical_high": 9.0,
+    },
+    "co2": {
+        "operating_high": 12.0,
+        "warning": (12.0, 15.0),
+        "critical_high": 15.0,
+    },
+    "tan": {
+        "operating_high": 2.0,
+        "warning_high": 2.0,
+        "critical_note": "risk depends strongly on pH and temperature",
+    },
+    "nh3": {
+        "operating_high": 0.0125,
+        "warning_high": 0.0125,
+        "critical_high": 0.02,
+    },
+    "alkalinity": {
+        "operating_low": 70.0,
+        "warning_low": 50.0,
+        "critical_low": 10.0,
+    },
+}
+
+DO_COLOR_STOPS = [
+    (4.0, (0.00, 0.00, 0.00)),
+    (6.0, (0.08, 0.08, 0.08)),
+    (8.0, (0.28, 0.28, 0.28)),
+    (9.0, (0.20, 0.80, 1.00)),
+    (10.0, (0.85, 0.98, 1.00)),
+]
+TAN_COLOR_STOPS = [
+    (0.0, (0.12, 0.70, 0.24)),
+    (1.0, (0.40, 0.60, 0.30)),
+    (2.0, (0.58, 0.22, 0.72)),
+    (3.0, (0.82, 0.08, 1.00)),
+]
+CO2_COLOR_STOPS = [
+    (0.5, (0.35, 0.85, 1.00)),
+    (10.0, (0.45, 0.75, 0.85)),
+    (12.0, (0.58, 0.58, 0.58)),
+    (15.0, (0.42, 0.42, 0.42)),
+    (25.0, (0.22, 0.22, 0.22)),
+]
+PH_COLOR_STOPS = [
+    (5.4, (1.00, 0.05, 0.05)),
+    (6.0, (1.00, 0.45, 0.05)),
+    (7.0, (0.05, 0.75, 0.18)),
+    (8.0, (0.05, 0.45, 1.00)),
+    (8.5, (0.35, 0.15, 0.90)),
+    (9.0, (0.75, 0.05, 0.95)),
+]
+ALK_COLOR_STOPS = [
+    (10.0, (1.00, 0.90, 0.00)),
+    (50.0, (0.95, 0.75, 0.08)),
+    (70.0, (0.35, 0.75, 0.25)),
+    (120.0, (0.12, 0.70, 0.35)),
+    (180.0, (0.05, 0.55, 1.00)),
+]
+NH3_COLOR_STOPS = [
+    (0.0, (0.02, 0.18, 0.08)),
+    (0.0125, (0.10, 0.70, 0.20)),
+    (0.02, (0.00, 1.00, 0.12)),
+    (0.05, (0.62, 1.00, 0.00)),
+]
+WQ_VIEW_AMPLITUDE = {
+    "temperature": 0.0,
+    "dissolved_oxygen": 1.0,
+    "tan": 1.0,
+    "co2": 1.0,
+    "ph": 0.3,
+    "alkalinity": 1.0,
+    "nh3": 1.0,
+}
+FEEDINGS_PRIM_PATH = "/Root/Group/Aquarium/AquariumComponents/FishTank/Feedings"
+INLET_PRIM_PATH = "/Root/Group/Aquarium/AquariumComponents/FishTank/inlet/Inlet_Trace_Source"
+WQ_DEFAULT_SENSOR_NAME = "mixed_tank_outlet"
+WQ_SENSOR_PRIM_NAMES = [
+    "inlet_reference",
+    "feed_zone_tan",
+    "fish_core_do",
+    "bottom_co2",
+    "biofilter_sentinel",
+    "mixed_tank_outlet",
+]
