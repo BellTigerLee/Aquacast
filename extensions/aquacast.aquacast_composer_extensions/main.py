@@ -1097,6 +1097,8 @@ class WaterTempController:
         self._particle_heat_weights = []
         self._particle_positions = []
         self._particle_temperatures = []
+        self._particle_water_radius = None
+        self._particle_water_height = None
         self._last_particle_update_time = 0.0
         self._particle_elapsed = 0.0
         self._warned_missing_water = False
@@ -1133,6 +1135,8 @@ class WaterTempController:
         self._particle_heat_weights = []
         self._particle_positions = []
         self._particle_temperatures = []
+        self._particle_water_radius = None
+        self._particle_water_height = None
         self._initialized = False
 
     async def _initialize_after_frames(self, frames=1):
@@ -1570,6 +1574,8 @@ class WaterTempController:
         self._particle_temperature_attr = temperature_primvar.GetAttr()
         self._particle_positions = positions
         self._particle_heat_weights = heat_weights
+        self._particle_water_radius = float(radius)
+        self._particle_water_height = float(up_max - up_min)
         self._last_particle_update_time = 0.0
         self._particle_elapsed = 0.0
         self._write_particle_samples(stage, force=True)
@@ -1747,27 +1753,25 @@ class WaterTempController:
         if dt <= 0.0:
             return
 
+        del dt
         t_room = float(get_global_config("ROOM_TEMP_C", 22.0))
         t_inlet = float(get_global_config("INLET_WATER_TEMP_C", 14.0))
         k_room = float(get_global_config("THERMAL_K_ROOM", 0.012))
         k_inflow = float(get_global_config("THERMAL_K_INFLOW", 0.022))
-
-        self._T = thermal_dynamics.step_temperature(
-            self._T,
-            dt,
-            T_room=t_room,
-            T_inlet=t_inlet,
-            k_room=k_room,
-            k_inflow=k_inflow,
-            inflow_enabled=self._inflow_enabled,
-        )
+        quality_controller = globals().get("_water_quality_controller")
+        if quality_controller is not None and hasattr(quality_controller, "snapshot"):
+            try:
+                snapshot = quality_controller.snapshot()
+                self._T = float(snapshot.get("temperature_c", self._T))
+            except Exception:
+                pass
 
         stops = self._sorted_stops(get_global_config("TEMP_COLOR_STOPS", []))
         stage = omni.usd.get_context().get_stage()
         if bool(get_global_config("ENABLE_PARTICLE_SYSTEM_TEMP_COLOR", False)) and stops and stage is not None:
             r, g, b = thermal_dynamics.temperature_to_rgb(self._T, stops)
             self._write_color(stage, r, g, b)
-        if stage is not None:
+        if stage is not None and not bool(get_global_config("ENABLE_WATER_QUALITY", get_global_config("ENABLE_WATER_QUALITY_SIM", False))):
             self._write_particle_samples(stage)
 
         self._maybe_log(now, t_room, t_inlet, k_room, k_inflow)
@@ -1806,6 +1810,8 @@ class WaterTempController:
             self._particle_positions = []
             self._particle_heat_weights = []
             self._particle_temperatures = []
+            self._particle_water_radius = None
+            self._particle_water_height = None
             self._prev_rgb = None
             self._T = float(get_global_config("INITIAL_WATER_TEMP_C", 14.0))
             self._last_update_time = None
@@ -1832,6 +1838,8 @@ class WaterTempController:
             self._particle_temperature_attr = None
             self._particle_positions = []
             self._particle_heat_weights = []
+            self._particle_water_radius = None
+            self._particle_water_height = None
             self._prev_rgb = None
             self._last_update_time = None
             self._last_particle_update_time = 0.0
@@ -1868,6 +1876,8 @@ class WaterQualityController:
         self._sphere_color_attrs = []
         self._view_variable_override = None
         self._using_backend = False
+        self._particle_register_signature = None
+        self._warned_geometry_mismatch = False
 
     def start(self):
         self._active = True
@@ -1884,6 +1894,8 @@ class WaterQualityController:
         self._particle_primvars = {}
         self._display_color_attr = None
         self._sphere_color_attrs = []
+        self._particle_register_signature = None
+        self._warned_geometry_mismatch = False
         self._last_update_time = None
 
     def sample_sensor(self, sensor_name=None):
@@ -2046,9 +2058,19 @@ class WaterQualityController:
                 self._model.params["inflow_enabled"] = inflow_enabled
             elif hasattr(self._model, "set_inflow"):
                 self._model.set_inflow(inflow_enabled)
-        state = self._model.advance(dt, temperature_c=self._current_temperature_c())
 
         stage = omni.usd.get_context().get_stage()
+        temp_controller = globals().get("_water_temp_controller")
+        if stage is not None and temp_controller is not None:
+            self._ensure_particles_registered(temp_controller)
+
+        state = self._model.advance(dt)
+
+        if temp_controller is not None:
+            try:
+                temp_controller._T = float(getattr(state, "temperature_c", temp_controller._T))
+            except Exception:
+                pass
         if stage is not None and bool(get_global_config("WQ_WRITE_PARTICLE_PRIMVARS", True)):
             self._write_particle_primvars(stage, now)
         self._maybe_log(now, state)
@@ -2071,6 +2093,54 @@ class WaterQualityController:
                 pass
         return True
 
+    def _ensure_particles_registered(self, temp_controller):
+        if self._model is None or not hasattr(self._model, "register_particles"):
+            return
+        positions = getattr(temp_controller, "_particle_positions", None) or []
+        if not positions:
+            return
+        heat_weights = getattr(temp_controller, "_particle_heat_weights", None) or []
+        signature = (
+            len(positions),
+            tuple(round(float(value), 4) for value in positions[0]),
+            tuple(round(float(value), 4) for value in positions[-1]),
+        )
+        if self._particle_register_signature == signature:
+            return
+        try:
+            result = self._model.register_particles(positions, heat_weights)
+            self._particle_register_signature = signature
+            carb.log_info(
+                f"[Aquacast WQ] Registered backend temperature particles "
+                f"count={result.get('count', len(positions))} graph={result.get('graph_hash', '')}"
+            )
+            self._warn_if_geometry_mismatch(temp_controller)
+        except Exception as exc:
+            carb.log_warn(f"[Aquacast WQ] Failed to register backend particles: {exc}")
+
+    def _warn_if_geometry_mismatch(self, temp_controller):
+        if self._warned_geometry_mismatch or self._model is None:
+            return
+        try:
+            snap = self._model.snapshot()
+            cfg_radius = float(snap.get("tank_radius_m", 0.0))
+            cfg_height = float(snap.get("tank_water_height_m", 0.0))
+            usd_radius = float(getattr(temp_controller, "_particle_water_radius", 0.0) or 0.0)
+            usd_height = float(getattr(temp_controller, "_particle_water_height", 0.0) or 0.0)
+            if cfg_radius <= 0.0 or cfg_height <= 0.0 or usd_radius <= 0.0 or usd_height <= 0.0:
+                return
+            radius_err = abs(usd_radius - cfg_radius) / cfg_radius
+            height_err = abs(usd_height - cfg_height) / cfg_height
+            if max(radius_err, height_err) > float(get_global_config("WQ_GEOMETRY_WARN_REL_TOL", 0.15)):
+                carb.log_warn(
+                    "[Aquacast Temp] USD water bounds differ from backend thermal geometry: "
+                    f"usd_radius={usd_radius:.3f}m cfg_radius={cfg_radius:.3f}m, "
+                    f"usd_height={usd_height:.3f}m cfg_height={cfg_height:.3f}m"
+                )
+                self._warned_geometry_mismatch = True
+        except Exception:
+            return
+
     def _write_particle_primvars(self, stage, now):
         update_interval = float(get_global_config("WQ_PARTICLE_UPDATE_INTERVAL_SECONDS", 1.0))
         if update_interval > 0.0 and now - self._last_particle_write_time < update_interval:
@@ -2091,15 +2161,19 @@ class WaterQualityController:
         if not prim or not prim.IsValid():
             return
 
+        self._ensure_particles_registered(temp_controller)
         if not self._particle_primvars and not self._sphere_color_attrs and self._display_color_attr is None:
             self._bind_particle_primvars(stage, prim)
         if not self._particle_primvars and not self._sphere_color_attrs and self._display_color_attr is None:
             return
 
-        values = self._model.particle_values(heat_weights, positions)
-        temperature_values = self._temperature_particle_values(temp_controller, len(heat_weights))
+        if hasattr(self._model, "registered_particle_values"):
+            values = self._model.registered_particle_values()
+        else:
+            values = self._model.particle_values(heat_weights, positions)
+        temperature_values = values.get("temperature") or []
         if temperature_values:
-            values["temperature"] = temperature_values
+            temp_controller._particle_temperatures = [float(value) for value in temperature_values]
         elif self._view_variable() == "temperature":
             return
         display_colors = self._display_colors(values)

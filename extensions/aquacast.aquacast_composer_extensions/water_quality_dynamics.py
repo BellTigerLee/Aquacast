@@ -59,11 +59,29 @@ def nitrification_rate(
     k_nitrif: float = 0.8,
     vtr_max: float = 5.0,
     biofilter_on: bool = True,
+    temp_c: float | None = None,
+    do_mg_l: float | None = None,
+    theta: float = 1.07,
+    t_ref_c: float = 20.0,
+    k_o2_mg_l: float = 1.0,
 ) -> float:
-    """First-order TAN oxidation capped by biofilter volumetric capacity, mg TAN/L/h."""
+    """First-order TAN oxidation capped by biofilter volumetric capacity, mg TAN/L/h.
+
+    Optional temperature (Arrhenius/theta) and dissolved-oxygen (Monod) limitation
+    factors are applied when ``temp_c`` / ``do_mg_l`` are supplied. Nitrifiers slow in
+    cold water and stall without oxygen; omitting both arguments leaves the bare
+    first-order rate (backward compatible).
+    """
     if not biofilter_on:
         return 0.0
-    return clamp(float(k_nitrif) * max(0.0, float(tan_mg_l)), 0.0, max(0.0, float(vtr_max)))
+    base = clamp(float(k_nitrif) * max(0.0, float(tan_mg_l)), 0.0, max(0.0, float(vtr_max)))
+    f_temp = float(theta) ** (float(temp_c) - float(t_ref_c)) if temp_c is not None else 1.0
+    if do_mg_l is None:
+        f_do = 1.0
+    else:
+        do = max(0.0, float(do_mg_l))
+        f_do = do / (max(EPS, float(k_o2_mg_l)) + do)
+    return clamp(base * f_temp * f_do, 0.0, max(0.0, float(vtr_max)))
 
 
 def tan_production(feed_rate_kg_h: float, *, protein_content: float = 0.45, tan_per_feed: float = 0.092) -> float:
@@ -115,6 +133,11 @@ def derivatives(state: Mapping[str, float], params: Mapping[str, float | bool]) 
         k_nitrif=float(params.get("k_nitrif_h", params.get("k_nitrif", 0.8))),
         vtr_max=float(params.get("vtr_max_mg_l_h", params.get("vtr_max", 5.0))),
         biofilter_on=bool(params.get("biofilter_on", True)),
+        temp_c=temp_c,
+        do_mg_l=do,
+        theta=float(params.get("nitrif_theta", 1.07)),
+        t_ref_c=float(params.get("nitrif_t_ref_c", 20.0)),
+        k_o2_mg_l=float(params.get("nitrif_k_o2_mg_l", 1.0)),
     )
     p_tan_kg_h = tan_production(
         feed_rate_kg_h,

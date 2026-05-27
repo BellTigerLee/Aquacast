@@ -113,6 +113,20 @@ class WaterQualityBackend:
                 "values": self.model.particle_values(heat_weights, positions),
             }
 
+    def register_particles(self, payload: dict[str, Any]) -> dict[str, Any]:
+        positions = payload.get("positions") or []
+        heat_weights = payload.get("heat_weights")
+        tags = payload.get("tags")
+        with self._lock:
+            return self.model.register_particles(positions, heat_weights, tags)
+
+    def registered_particle_values(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "status": "ok",
+                "values": self.model.registered_particle_values(),
+            }
+
 
 class RequestHandler(BaseHTTPRequestHandler):
     backend: WaterQualityBackend
@@ -129,6 +143,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._write_json(self.backend.sensor((query.get("name") or ["mixed_tank_outlet"])[0]))
             elif parsed.path == "/sensors":
                 self._write_json(self.backend.all_sensors())
+            elif parsed.path == "/particles/values":
+                self._write_json(self.backend.registered_particle_values())
             else:
                 self._write_json({"status": "error", "error": "not found"}, status=404)
         except Exception as exc:
@@ -151,6 +167,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._write_json(self.backend.reset(payload.get("scenario_name") or payload.get("name")))
             elif parsed.path == "/particle-values":
                 self._write_json(self.backend.particle_values(payload))
+            elif parsed.path == "/particles/register":
+                self._write_json(self.backend.register_particles(payload))
             else:
                 self._write_json({"status": "error", "error": "not found"}, status=404)
         except ValueError as exc:
@@ -190,7 +208,24 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 
 def _path_from_env(name: str, default: Path) -> Path:
-    return Path(os.environ.get(name, str(default))).resolve()
+    value = Path(os.environ.get(name, str(default)))
+    if not value.is_absolute():
+        value = ROOT / value
+    return value.resolve()
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def build_server(host: str, port: int, scenario_name: str) -> ThreadingHTTPServer:
@@ -207,13 +242,18 @@ def build_server(host: str, port: int, scenario_name: str) -> ThreadingHTTPServe
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Aquacast local water-quality computation backend")
+    parser.add_argument("--env-file", default=os.environ.get("AQUACAST_BACKEND_ENV_FILE", str(Path(__file__).with_name("aquacast-backend.env"))))
     parser.add_argument("--host", default=os.environ.get("AQUACAST_BACKEND_HOST", DEFAULT_HOST))
     parser.add_argument("--port", type=int, default=int(os.environ.get("AQUACAST_BACKEND_PORT", DEFAULT_PORT)))
     parser.add_argument("--scenario", default=os.environ.get("AQUACAST_WQ_SCENARIO", "baseline"))
     args = parser.parse_args()
 
-    server = build_server(args.host, args.port, args.scenario)
-    print(f"Aquacast water-quality backend listening on http://{args.host}:{args.port}", flush=True)
+    _load_env_file(Path(args.env_file))
+    host = os.environ.get("AQUACAST_BACKEND_HOST", args.host)
+    port = int(os.environ.get("AQUACAST_BACKEND_PORT", args.port))
+    scenario = os.environ.get("AQUACAST_WQ_SCENARIO", args.scenario)
+    server = build_server(host, port, scenario)
+    print(f"Aquacast water-quality backend listening on http://{host}:{port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

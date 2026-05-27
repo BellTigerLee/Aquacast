@@ -56,6 +56,7 @@ class WaterQualityBackendClient:
         if scenario_name:
             payload["scenario_name"] = scenario_name
         self._snapshot = self._post("/reset", payload)
+        self._particle_feature_cache = {}
         return dict(self._snapshot)
 
     def sensor_reading(self, sensor_name: str) -> BackendSensorReading:
@@ -63,6 +64,14 @@ class WaterQualityBackendClient:
         return BackendSensorReading(payload)
 
     def particle_values(self, heat_weights: list[float], positions: list[Any] | None = None) -> dict[str, list[float]]:
+        try:
+            payload = self._get("/particles/values")
+            values = payload.get("values", {})
+            if values:
+                return values
+        except Exception:
+            pass
+
         count = len(heat_weights)
         if count <= 0:
             return {}
@@ -98,6 +107,25 @@ class WaterQualityBackendClient:
             "ph": ph.tolist(),
             "nh3": nh3.tolist(),
         }
+
+    def register_particles(
+        self,
+        positions: list[Any],
+        heat_weights: list[float] | None = None,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "positions": [
+                [float(pos[0]), float(pos[1]), float(pos[2])]
+                for pos in positions
+            ],
+            "count": len(positions),
+        }
+        if heat_weights is not None:
+            payload["heat_weights"] = [float(value) for value in heat_weights]
+        if tags is not None:
+            payload["tags"] = list(tags)
+        return self._post("/particles/register", payload)
 
     def apply_feed(self, mass_kg: float) -> None:
         self._action({"type": "feed", "mass_kg": float(mass_kg)})

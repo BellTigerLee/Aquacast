@@ -36,7 +36,7 @@ def main() -> None:
 
     assert_ok(get_json(args.url, "/health"), "health")
     assert_ok(get_json(args.url, "/snapshot"), "snapshot")
-    advanced = assert_ok(post_json(args.url, "/advance", {"real_dt_s": 0.25, "temperature_c": 14.0}), "advance")
+    advanced = assert_ok(post_json(args.url, "/advance", {"real_dt_s": 0.25}), "advance")
     for key in ("dissolved_oxygen_mg_l", "tan_mg_l", "co2_mg_l", "alkalinity_mg_l_as_caco3", "ph", "nh3_mg_l"):
         if key not in advanced:
             raise AssertionError(f"advance missing key: {key}")
@@ -50,6 +50,15 @@ def main() -> None:
     values = particles.get("values") or {}
     if sorted(values) != ["alkalinity", "co2", "dissolved_oxygen", "nh3", "ph", "tan", "temperature"]:
         raise AssertionError(f"unexpected particle fields: {sorted(values)}")
+    registered = assert_ok(
+        post_json(args.url, "/particles/register", {"positions": [[0, 0, 0], [1, 0, 0], [0, 1, 0]]}),
+        "particles-register",
+    )
+    if registered.get("count") != 3:
+        raise AssertionError(f"unexpected register payload: {registered}")
+    cached = assert_ok(get_json(args.url, "/particles/values"), "particles-values")
+    if len((cached.get("values") or {}).get("temperature", [])) != 3:
+        raise AssertionError(f"unexpected cached particle values: {cached}")
     print("aquacast water-quality backend smoke ok")
 
 
