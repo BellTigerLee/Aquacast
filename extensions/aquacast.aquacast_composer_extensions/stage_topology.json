@@ -917,6 +917,676 @@
                                   "children": []
                                 }
                               ]
+                            },
+                            {
+                              "name": "Fish_01",
+                              "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01",
+                              "children": [
+                                {
+                                  "name": "Materials",
+                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials",
+                                  "children": [
+                                    {
+                                      "name": "Material_001",
+                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Material_001",
+                                      "children": [
+                                        {
+                                          "name": "pbr_shader",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Material_001/pbr_shader",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "uvset0",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Material_001/uvset0",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "tex_emissive",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Material_001/tex_emissive",
+                                          "children": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "name": "Q11710_1all_1_tex0",
+                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex0",
+                                      "children": [
+                                        {
+                                          "name": "pbr_shader",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex0/pbr_shader",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "uvset0",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex0/uvset0",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "tex_emissive",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex0/tex_emissive",
+                                          "children": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "name": "Q11710_1all_1_tex1",
+                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex1",
+                                      "children": [
+                                        {
+                                          "name": "pbr_shader",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex1/pbr_shader",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "uvset0",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex1/uvset0",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "tex_emissive",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex1/tex_emissive",
+                                          "children": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "name": "Q11710_1all_1_tex2",
+                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex2",
+                                      "children": [
+                                        {
+                                          "name": "pbr_shader",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex2/pbr_shader",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "uvset0",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex2/uvset0",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "tex_emissive",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Materials/Q11710_1all_1_tex2/tex_emissive",
+                                          "children": []
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "name": "Meshes",
+                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes",
+                                  "children": [
+                                    {
+                                      "name": "Sketchfab_model",
+                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model",
+                                      "children": [
+                                        {
+                                          "name": "root",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root",
+                                          "children": [
+                                            {
+                                              "name": "GLTF_SceneRootNode",
+                                              "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode",
+                                              "children": [
+                                                {
+                                                  "name": "Q11710_1all_1_5",
+                                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5",
+                                                  "children": [
+                                                    {
+                                                      "name": "Object_6",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_6",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_1",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_6/Object_1",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_7",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_7",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_2",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_7/Object_2",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_8",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_8",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_3",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_8/Object_3",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_9",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_9",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_4",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_9/Object_4",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_10",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_10",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_5",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_10/Object_5",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_11",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_11",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_6",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_11/Object_6",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_12",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_12",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_7",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_12/Object_7",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_13",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_13",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_8",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_13/Object_8",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_14",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_14",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_9",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_14/Object_9",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_15",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_15",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_10",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_15/Object_10",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_16",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_16",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_11",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_16/Object_11",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_17",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_17",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_12",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_17/Object_12",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_18",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_18",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_13",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_18/Object_13",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_19",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_19",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_14",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_19/Object_14",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_20",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_20",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_15",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_20/Object_15",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_21",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_21",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_16",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_21/Object_16",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_22",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_22",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_17",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_22/Object_17",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_23",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_23",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_18",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_23/Object_18",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_24",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_24",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_19",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_24/Object_19",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "name": "Fish_02",
+                              "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02",
+                              "children": [
+                                {
+                                  "name": "Materials",
+                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials",
+                                  "children": [
+                                    {
+                                      "name": "Material_001",
+                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Material_001",
+                                      "children": [
+                                        {
+                                          "name": "pbr_shader",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Material_001/pbr_shader",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "uvset0",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Material_001/uvset0",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "tex_emissive",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Material_001/tex_emissive",
+                                          "children": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "name": "Q11710_1all_1_tex0",
+                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex0",
+                                      "children": [
+                                        {
+                                          "name": "pbr_shader",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex0/pbr_shader",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "uvset0",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex0/uvset0",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "tex_emissive",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex0/tex_emissive",
+                                          "children": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "name": "Q11710_1all_1_tex1",
+                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex1",
+                                      "children": [
+                                        {
+                                          "name": "pbr_shader",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex1/pbr_shader",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "uvset0",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex1/uvset0",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "tex_emissive",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex1/tex_emissive",
+                                          "children": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "name": "Q11710_1all_1_tex2",
+                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex2",
+                                      "children": [
+                                        {
+                                          "name": "pbr_shader",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex2/pbr_shader",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "uvset0",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex2/uvset0",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "tex_emissive",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Materials/Q11710_1all_1_tex2/tex_emissive",
+                                          "children": []
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "name": "Meshes",
+                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes",
+                                  "children": [
+                                    {
+                                      "name": "Sketchfab_model",
+                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model",
+                                      "children": [
+                                        {
+                                          "name": "root",
+                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root",
+                                          "children": [
+                                            {
+                                              "name": "GLTF_SceneRootNode",
+                                              "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode",
+                                              "children": [
+                                                {
+                                                  "name": "Q11710_1all_1_5",
+                                                  "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5",
+                                                  "children": [
+                                                    {
+                                                      "name": "Object_6",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_6",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_1",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_6/Object_1",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_7",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_7",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_2",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_7/Object_2",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_8",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_8",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_3",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_8/Object_3",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_9",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_9",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_4",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_9/Object_4",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_10",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_10",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_5",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_10/Object_5",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_11",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_11",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_6",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_11/Object_6",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_12",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_12",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_7",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_12/Object_7",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_13",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_13",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_8",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_13/Object_8",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_14",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_14",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_9",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_14/Object_9",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_15",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_15",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_10",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_15/Object_10",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_16",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_16",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_11",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_16/Object_11",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_17",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_17",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_12",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_17/Object_12",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_18",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_18",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_13",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_18/Object_13",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_19",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_19",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_14",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_19/Object_14",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_20",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_20",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_15",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_20/Object_15",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_21",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_21",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_16",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_21/Object_16",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_22",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_22",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_17",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_22/Object_17",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_23",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_23",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_18",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_23/Object_18",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "name": "Object_24",
+                                                      "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_24",
+                                                      "children": [
+                                                        {
+                                                          "name": "Object_19",
+                                                          "path": "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_24/Object_19",
+                                                          "children": []
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
                             }
                           ]
                         }
@@ -1271,676 +1941,6 @@
       "name": "Viewport_Measure",
       "path": "/Viewport_Measure",
       "children": []
-    },
-    {
-      "name": "Fish_01",
-      "path": "/Fish_01",
-      "children": [
-        {
-          "name": "Materials",
-          "path": "/Fish_01/Materials",
-          "children": [
-            {
-              "name": "Material_001",
-              "path": "/Fish_01/Materials/Material_001",
-              "children": [
-                {
-                  "name": "pbr_shader",
-                  "path": "/Fish_01/Materials/Material_001/pbr_shader",
-                  "children": []
-                },
-                {
-                  "name": "uvset0",
-                  "path": "/Fish_01/Materials/Material_001/uvset0",
-                  "children": []
-                },
-                {
-                  "name": "tex_emissive",
-                  "path": "/Fish_01/Materials/Material_001/tex_emissive",
-                  "children": []
-                }
-              ]
-            },
-            {
-              "name": "Q11710_1all_1_tex0",
-              "path": "/Fish_01/Materials/Q11710_1all_1_tex0",
-              "children": [
-                {
-                  "name": "pbr_shader",
-                  "path": "/Fish_01/Materials/Q11710_1all_1_tex0/pbr_shader",
-                  "children": []
-                },
-                {
-                  "name": "uvset0",
-                  "path": "/Fish_01/Materials/Q11710_1all_1_tex0/uvset0",
-                  "children": []
-                },
-                {
-                  "name": "tex_emissive",
-                  "path": "/Fish_01/Materials/Q11710_1all_1_tex0/tex_emissive",
-                  "children": []
-                }
-              ]
-            },
-            {
-              "name": "Q11710_1all_1_tex1",
-              "path": "/Fish_01/Materials/Q11710_1all_1_tex1",
-              "children": [
-                {
-                  "name": "pbr_shader",
-                  "path": "/Fish_01/Materials/Q11710_1all_1_tex1/pbr_shader",
-                  "children": []
-                },
-                {
-                  "name": "uvset0",
-                  "path": "/Fish_01/Materials/Q11710_1all_1_tex1/uvset0",
-                  "children": []
-                },
-                {
-                  "name": "tex_emissive",
-                  "path": "/Fish_01/Materials/Q11710_1all_1_tex1/tex_emissive",
-                  "children": []
-                }
-              ]
-            },
-            {
-              "name": "Q11710_1all_1_tex2",
-              "path": "/Fish_01/Materials/Q11710_1all_1_tex2",
-              "children": [
-                {
-                  "name": "pbr_shader",
-                  "path": "/Fish_01/Materials/Q11710_1all_1_tex2/pbr_shader",
-                  "children": []
-                },
-                {
-                  "name": "uvset0",
-                  "path": "/Fish_01/Materials/Q11710_1all_1_tex2/uvset0",
-                  "children": []
-                },
-                {
-                  "name": "tex_emissive",
-                  "path": "/Fish_01/Materials/Q11710_1all_1_tex2/tex_emissive",
-                  "children": []
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "name": "Meshes",
-          "path": "/Fish_01/Meshes",
-          "children": [
-            {
-              "name": "Sketchfab_model",
-              "path": "/Fish_01/Meshes/Sketchfab_model",
-              "children": [
-                {
-                  "name": "root",
-                  "path": "/Fish_01/Meshes/Sketchfab_model/root",
-                  "children": [
-                    {
-                      "name": "GLTF_SceneRootNode",
-                      "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode",
-                      "children": [
-                        {
-                          "name": "Q11710_1all_1_5",
-                          "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5",
-                          "children": [
-                            {
-                              "name": "Object_6",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_6",
-                              "children": [
-                                {
-                                  "name": "Object_1",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_6/Object_1",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_7",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_7",
-                              "children": [
-                                {
-                                  "name": "Object_2",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_7/Object_2",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_8",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_8",
-                              "children": [
-                                {
-                                  "name": "Object_3",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_8/Object_3",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_9",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_9",
-                              "children": [
-                                {
-                                  "name": "Object_4",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_9/Object_4",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_10",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_10",
-                              "children": [
-                                {
-                                  "name": "Object_5",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_10/Object_5",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_11",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_11",
-                              "children": [
-                                {
-                                  "name": "Object_6",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_11/Object_6",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_12",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_12",
-                              "children": [
-                                {
-                                  "name": "Object_7",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_12/Object_7",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_13",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_13",
-                              "children": [
-                                {
-                                  "name": "Object_8",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_13/Object_8",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_14",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_14",
-                              "children": [
-                                {
-                                  "name": "Object_9",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_14/Object_9",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_15",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_15",
-                              "children": [
-                                {
-                                  "name": "Object_10",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_15/Object_10",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_16",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_16",
-                              "children": [
-                                {
-                                  "name": "Object_11",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_16/Object_11",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_17",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_17",
-                              "children": [
-                                {
-                                  "name": "Object_12",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_17/Object_12",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_18",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_18",
-                              "children": [
-                                {
-                                  "name": "Object_13",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_18/Object_13",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_19",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_19",
-                              "children": [
-                                {
-                                  "name": "Object_14",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_19/Object_14",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_20",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_20",
-                              "children": [
-                                {
-                                  "name": "Object_15",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_20/Object_15",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_21",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_21",
-                              "children": [
-                                {
-                                  "name": "Object_16",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_21/Object_16",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_22",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_22",
-                              "children": [
-                                {
-                                  "name": "Object_17",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_22/Object_17",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_23",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_23",
-                              "children": [
-                                {
-                                  "name": "Object_18",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_23/Object_18",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_24",
-                              "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_24",
-                              "children": [
-                                {
-                                  "name": "Object_19",
-                                  "path": "/Fish_01/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_24/Object_19",
-                                  "children": []
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "Fish_02",
-      "path": "/Fish_02",
-      "children": [
-        {
-          "name": "Materials",
-          "path": "/Fish_02/Materials",
-          "children": [
-            {
-              "name": "Material_001",
-              "path": "/Fish_02/Materials/Material_001",
-              "children": [
-                {
-                  "name": "pbr_shader",
-                  "path": "/Fish_02/Materials/Material_001/pbr_shader",
-                  "children": []
-                },
-                {
-                  "name": "uvset0",
-                  "path": "/Fish_02/Materials/Material_001/uvset0",
-                  "children": []
-                },
-                {
-                  "name": "tex_emissive",
-                  "path": "/Fish_02/Materials/Material_001/tex_emissive",
-                  "children": []
-                }
-              ]
-            },
-            {
-              "name": "Q11710_1all_1_tex0",
-              "path": "/Fish_02/Materials/Q11710_1all_1_tex0",
-              "children": [
-                {
-                  "name": "pbr_shader",
-                  "path": "/Fish_02/Materials/Q11710_1all_1_tex0/pbr_shader",
-                  "children": []
-                },
-                {
-                  "name": "uvset0",
-                  "path": "/Fish_02/Materials/Q11710_1all_1_tex0/uvset0",
-                  "children": []
-                },
-                {
-                  "name": "tex_emissive",
-                  "path": "/Fish_02/Materials/Q11710_1all_1_tex0/tex_emissive",
-                  "children": []
-                }
-              ]
-            },
-            {
-              "name": "Q11710_1all_1_tex1",
-              "path": "/Fish_02/Materials/Q11710_1all_1_tex1",
-              "children": [
-                {
-                  "name": "pbr_shader",
-                  "path": "/Fish_02/Materials/Q11710_1all_1_tex1/pbr_shader",
-                  "children": []
-                },
-                {
-                  "name": "uvset0",
-                  "path": "/Fish_02/Materials/Q11710_1all_1_tex1/uvset0",
-                  "children": []
-                },
-                {
-                  "name": "tex_emissive",
-                  "path": "/Fish_02/Materials/Q11710_1all_1_tex1/tex_emissive",
-                  "children": []
-                }
-              ]
-            },
-            {
-              "name": "Q11710_1all_1_tex2",
-              "path": "/Fish_02/Materials/Q11710_1all_1_tex2",
-              "children": [
-                {
-                  "name": "pbr_shader",
-                  "path": "/Fish_02/Materials/Q11710_1all_1_tex2/pbr_shader",
-                  "children": []
-                },
-                {
-                  "name": "uvset0",
-                  "path": "/Fish_02/Materials/Q11710_1all_1_tex2/uvset0",
-                  "children": []
-                },
-                {
-                  "name": "tex_emissive",
-                  "path": "/Fish_02/Materials/Q11710_1all_1_tex2/tex_emissive",
-                  "children": []
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "name": "Meshes",
-          "path": "/Fish_02/Meshes",
-          "children": [
-            {
-              "name": "Sketchfab_model",
-              "path": "/Fish_02/Meshes/Sketchfab_model",
-              "children": [
-                {
-                  "name": "root",
-                  "path": "/Fish_02/Meshes/Sketchfab_model/root",
-                  "children": [
-                    {
-                      "name": "GLTF_SceneRootNode",
-                      "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode",
-                      "children": [
-                        {
-                          "name": "Q11710_1all_1_5",
-                          "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5",
-                          "children": [
-                            {
-                              "name": "Object_6",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_6",
-                              "children": [
-                                {
-                                  "name": "Object_1",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_6/Object_1",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_7",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_7",
-                              "children": [
-                                {
-                                  "name": "Object_2",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_7/Object_2",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_8",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_8",
-                              "children": [
-                                {
-                                  "name": "Object_3",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_8/Object_3",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_9",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_9",
-                              "children": [
-                                {
-                                  "name": "Object_4",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_9/Object_4",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_10",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_10",
-                              "children": [
-                                {
-                                  "name": "Object_5",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_10/Object_5",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_11",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_11",
-                              "children": [
-                                {
-                                  "name": "Object_6",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_11/Object_6",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_12",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_12",
-                              "children": [
-                                {
-                                  "name": "Object_7",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_12/Object_7",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_13",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_13",
-                              "children": [
-                                {
-                                  "name": "Object_8",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_13/Object_8",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_14",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_14",
-                              "children": [
-                                {
-                                  "name": "Object_9",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_14/Object_9",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_15",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_15",
-                              "children": [
-                                {
-                                  "name": "Object_10",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_15/Object_10",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_16",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_16",
-                              "children": [
-                                {
-                                  "name": "Object_11",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_16/Object_11",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_17",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_17",
-                              "children": [
-                                {
-                                  "name": "Object_12",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_17/Object_12",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_18",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_18",
-                              "children": [
-                                {
-                                  "name": "Object_13",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_18/Object_13",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_19",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_19",
-                              "children": [
-                                {
-                                  "name": "Object_14",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_19/Object_14",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_20",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_20",
-                              "children": [
-                                {
-                                  "name": "Object_15",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_20/Object_15",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_21",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_21",
-                              "children": [
-                                {
-                                  "name": "Object_16",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_21/Object_16",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_22",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_22",
-                              "children": [
-                                {
-                                  "name": "Object_17",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_22/Object_17",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_23",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_23",
-                              "children": [
-                                {
-                                  "name": "Object_18",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_23/Object_18",
-                                  "children": []
-                                }
-                              ]
-                            },
-                            {
-                              "name": "Object_24",
-                              "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_24",
-                              "children": [
-                                {
-                                  "name": "Object_19",
-                                  "path": "/Fish_02/Meshes/Sketchfab_model/root/GLTF_SceneRootNode/Q11710_1all_1_5/Object_24/Object_19",
-                                  "children": []
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        }
-      ]
     },
     {
       "name": "OmniKit_Viewport_LightRig",
