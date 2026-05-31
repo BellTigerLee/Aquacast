@@ -37,6 +37,11 @@ _dynamic_fish_spawner = None
 _fish_swim_controller = None
 _water_temp_controller = None
 _water_quality_controller = None
+_global_config_cache = {
+    "path": None,
+    "mtime_ns": None,
+    "module": None,
+}
 _topology_json_cache = {
     "path": None,
     "mtime_ns": None,
@@ -65,6 +70,19 @@ def get_stage_topology_json_path():
 
 def get_global_config(name, default=None):
     config_path = Path(__file__).with_name("global_variable.py")
+    try:
+        mtime_ns = config_path.stat().st_mtime_ns
+    except OSError:
+        return default
+
+    cached_module = _global_config_cache.get("module")
+    if (
+        cached_module is not None
+        and _global_config_cache.get("path") == config_path
+        and _global_config_cache.get("mtime_ns") == mtime_ns
+    ):
+        return getattr(cached_module, name, default)
+
     spec = importlib.util.spec_from_file_location("aquacast_global_variable", config_path)
     if spec is None or spec.loader is None:
         return default
@@ -77,6 +95,11 @@ def get_global_config(name, default=None):
     finally:
         sys.dont_write_bytecode = old_dont_write_bytecode
 
+    _global_config_cache.update({
+        "path": config_path,
+        "mtime_ns": mtime_ns,
+        "module": module,
+    })
     return getattr(module, name, default)
 
 
@@ -498,6 +521,42 @@ def _sample_color_stops(stops, count):
         ])
     colors = np.clip(colors, 0.0, 1.0)
     return [Gf.Vec3f(float(row[0]), float(row[1]), float(row[2])) for row in colors]
+
+
+def _temperature_colors_to_vec3f(temperatures_np, stop_values, stop_colors):
+    temp_values = np.asarray(temperatures_np, dtype=np.float64)
+    if temp_values.size == 0:
+        return []
+    if stop_values.size == 0:
+        return [Gf.Vec3f(0.0, 0.0, 0.0) for _ in range(int(temp_values.size))]
+
+    if stop_values.size == 1:
+        colors = np.repeat(stop_colors[:1], int(temp_values.size), axis=0)
+    else:
+        colors = np.column_stack([
+            np.interp(temp_values, stop_values, stop_colors[:, channel])
+            for channel in range(3)
+        ])
+    colors = np.clip(colors, 0.0, 1.0)
+    return [Gf.Vec3f(float(row[0]), float(row[1]), float(row[2])) for row in colors]
+
+
+def _temperatures_to_proto_indices(temperatures_np, stops, palette_count):
+    count = int(palette_count)
+    temp_values = np.asarray(temperatures_np, dtype=np.float64)
+    if count <= 0 or temp_values.size == 0:
+        return Vt.IntArray()
+    if count == 1 or not stops:
+        return Vt.IntArray([0 for _ in range(int(temp_values.size))])
+
+    low = float(stops[0][0])
+    high = float(stops[-1][0])
+    if high <= low:
+        return Vt.IntArray([0 for _ in range(int(temp_values.size))])
+
+    normalized = (np.clip(temp_values, low, high) - low) / (high - low)
+    indices = np.rint(normalized * float(count - 1)).astype(np.int32)
+    return Vt.IntArray([int(index) for index in indices])
 
 
 def _colors_to_proto_indices(colors, palette):
@@ -1734,6 +1793,9 @@ class WaterTempController:
         self._warned_missing_isosurface = False
         self._color_stops_cached = None
         self._color_stops_sorted = None
+        self._color_stop_arrays_cached = None
+        self._color_stop_values = np.asarray([], dtype=np.float64)
+        self._color_stop_colors = np.zeros((0, 3), dtype=np.float64)
         self._prev_rgb = None
         self._water_prim = None
         self._particles_prim = None
@@ -1746,6 +1808,8 @@ class WaterTempController:
         self._particle_color_palette = []
         self._particle_temperature_attr = None
         self._particle_heat_weights = []
+        self._particle_heat_weights_cached = None
+        self._particle_heat_weights_np = np.asarray([], dtype=np.float64)
         self._particle_positions = []
         self._particle_temperatures = []
         self._particle_water_radius = None
@@ -1785,6 +1849,8 @@ class WaterTempController:
         self._particle_color_palette = []
         self._particle_temperature_attr = None
         self._particle_heat_weights = []
+        self._particle_heat_weights_cached = None
+        self._particle_heat_weights_np = np.asarray([], dtype=np.float64)
         self._particle_positions = []
         self._particle_temperatures = []
         self._particle_water_radius = None
@@ -1870,6 +1936,8 @@ class WaterTempController:
             self._particle_temperature_attr = None
             self._particle_positions = []
             self._particle_heat_weights = []
+            self._particle_heat_weights_cached = None
+            self._particle_heat_weights_np = np.asarray([], dtype=np.float64)
             return
 
         self._warned_missing_water = False
@@ -1900,6 +1968,8 @@ class WaterTempController:
             self._particle_temperature_attr = None
             self._particle_positions = []
             self._particle_heat_weights = []
+            self._particle_heat_weights_cached = None
+            self._particle_heat_weights_np = np.asarray([], dtype=np.float64)
 
     def _capture_particle_set(self, water_prim):
         return {
@@ -2382,7 +2452,7 @@ class WaterTempController:
             f"mode={authoring_mode} at {particle_path} as sibling of water={water_prim.GetPath()}"
         )
 
-    def _write_particle_proto_colors(self, colors, palette=None):
+    def _write_particle_proto_colors(self, colors, palette=None, proto_indices=None):
         if not colors:
             return
         prototype_color_attrs = getattr(self, "_particle_prototype_color_attrs", []) or []
@@ -2393,8 +2463,27 @@ class WaterTempController:
 
         proto_indices_attr = getattr(self, "_particle_proto_indices_attr", None)
         color_palette = getattr(self, "_particle_color_palette", []) or []
-        if proto_indices_attr is not None and color_palette:
-            proto_indices_attr.Set(_colors_to_proto_indices(colors, color_palette))
+        if proto_indices_attr is not None:
+            if proto_indices is not None:
+                proto_indices_attr.Set(proto_indices)
+            elif color_palette:
+                proto_indices_attr.Set(_colors_to_proto_indices(colors, color_palette))
+
+    def _particle_heat_weights_array(self):
+        source = self._particle_heat_weights
+        if getattr(self, "_particle_heat_weights_cached", None) is not source:
+            self._particle_heat_weights_cached = source
+            self._particle_heat_weights_np = np.asarray(source, dtype=np.float64)
+        return self._particle_heat_weights_np
+
+    def _color_stop_arrays(self, stops):
+        if getattr(self, "_color_stop_arrays_cached", None) is not stops:
+            self._color_stop_arrays_cached = stops
+            self._color_stop_values = np.asarray([float(stop[0]) for stop in stops], dtype=np.float64)
+            self._color_stop_colors = np.asarray([stop[1] for stop in stops], dtype=np.float64)
+            if self._color_stop_colors.size == 0:
+                self._color_stop_colors = np.zeros((0, 3), dtype=np.float64)
+        return self._color_stop_values, self._color_stop_colors
 
     def _write_particle_samples(self, stage, force=False):
         particle_sets = getattr(self, "_particle_sets", []) or []
@@ -2443,14 +2532,19 @@ class WaterTempController:
         heat_delta = float(get_global_config("TEMP_PARTICLE_HEAT_DELTA_C", 42.0))
         spread_rate = float(get_global_config("TEMP_PARTICLE_SPREAD_RATE", 0.05))
         spread = 1.0 - math.exp(-max(0.0, self._particle_elapsed) * max(0.0, spread_rate))
-        temperatures = []
-        colors = []
-        temp_palette = _sample_color_stops(stops, len(getattr(self, "_particle_color_palette", []) or []) or 64)
-        for weight in self._particle_heat_weights:
-            temp = self._T + heat_delta * weight * spread
-            temperatures.append(float(temp))
-            if write_temperature_color:
-                colors.append(Gf.Vec3f(*thermal_dynamics.temperature_to_rgb(temp, stops)))
+        weights = self._particle_heat_weights_array()
+        temperatures_np = self._T + heat_delta * weights * spread
+        temperatures = [float(value) for value in temperatures_np]
+        if write_temperature_color:
+            stop_values, stop_colors = self._color_stop_arrays(stops)
+            colors = _temperature_colors_to_vec3f(temperatures_np, stop_values, stop_colors)
+        else:
+            colors = []
+        temp_palette = None
+        proto_indices = None
+        if write_temperature_color and not sphere_color_attrs:
+            temp_palette = _sample_color_stops(stops, len(getattr(self, "_particle_color_palette", []) or []) or 64)
+            proto_indices = _temperatures_to_proto_indices(temperatures_np, stops, len(temp_palette))
         self._particle_temperatures = temperatures
 
         try:
@@ -2465,7 +2559,7 @@ class WaterTempController:
                             self._particle_color_attr.Set(Vt.Vec3fArray(colors))
                             if self._particle_display_color_attr is not None:
                                 self._particle_display_color_attr.Set(Vt.Vec3fArray(colors))
-                            self._write_particle_proto_colors(colors, temp_palette)
+                            self._write_particle_proto_colors(colors, temp_palette, proto_indices)
                     if self._particle_temperature_attr is not None:
                         self._particle_temperature_attr.Set(Vt.FloatArray(temperatures))
             else:
@@ -2477,7 +2571,7 @@ class WaterTempController:
                         self._particle_color_attr.Set(Vt.Vec3fArray(colors))
                         if self._particle_display_color_attr is not None:
                             self._particle_display_color_attr.Set(Vt.Vec3fArray(colors))
-                        self._write_particle_proto_colors(colors, temp_palette)
+                        self._write_particle_proto_colors(colors, temp_palette, proto_indices)
                 if self._particle_temperature_attr is not None:
                     self._particle_temperature_attr.Set(Vt.FloatArray(temperatures))
         except Exception as exc:
@@ -2634,6 +2728,8 @@ class WaterTempController:
             self._particle_temperature_attr = None
             self._particle_positions = []
             self._particle_heat_weights = []
+            self._particle_heat_weights_cached = None
+            self._particle_heat_weights_np = np.asarray([], dtype=np.float64)
             self._particle_temperatures = []
             self._particle_water_radius = None
             self._particle_water_height = None
@@ -2664,6 +2760,8 @@ class WaterTempController:
             self._particle_temperature_attr = None
             self._particle_positions = []
             self._particle_heat_weights = []
+            self._particle_heat_weights_cached = None
+            self._particle_heat_weights_np = np.asarray([], dtype=np.float64)
             self._particle_water_radius = None
             self._particle_water_height = None
             self._prev_rgb = None
