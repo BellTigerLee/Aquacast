@@ -30,13 +30,19 @@ water_quality_model = importlib.reload(water_quality_model)
 import carb  # noqa: E402
 import omni.kit.app  # noqa: E402
 import omni.usd  # noqa: E402
-from pxr import Gf, Sdf, Usd, UsdGeom, Vt  # noqa: E402
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt  # noqa: E402
 
 _stage_structure_cache = None
 _dynamic_fish_spawner = None
 _fish_swim_controller = None
 _water_temp_controller = None
 _water_quality_controller = None
+_topology_json_cache = {
+    "path": None,
+    "mtime_ns": None,
+    "snapshot": {},
+    "name_index": {},
+}
 
 
 def should_print_stage_topology():
@@ -45,6 +51,11 @@ def should_print_stage_topology():
 
 def should_export_stage_topology_json():
     return bool(get_global_config("EXPORT_STAGE_TOPOLOGY_JSON", False))
+
+
+def should_use_stage_structure_cache():
+    default = should_print_stage_topology() or should_export_stage_topology_json()
+    return bool(get_global_config("ENABLE_STAGE_STRUCTURE_CACHE", default))
 
 
 def get_stage_topology_json_path():
@@ -111,12 +122,32 @@ def _resolve_dynamic_mix(default):
     return value
 
 
+def _fish_rng_seed_is_random(default):
+    raw = _env_value("FISH_RNG_SEED")
+    value = default if raw is None else raw
+    return dynamic_fish_spawn.is_random_seed(value)
+
+
+def _resolve_fish_rng_seed(default):
+    raw = _env_value("FISH_RNG_SEED")
+    value = dynamic_fish_spawn.resolve_seed(raw, default)
+    if raw is not None and not dynamic_fish_spawn.is_random_seed(raw):
+        try:
+            int(float(str(raw).strip()))
+        except (TypeError, ValueError):
+            _warn_env_parse("FISH_RNG_SEED", raw, default)
+    return value
+
+
 def _resolve_dynamic_asset(env_name, default):
     return dynamic_fish_spawn.resolve_asset_path(_env_value(env_name), default)
 
 
 def start_stage_structure_cache():
     global _stage_structure_cache
+    if not should_use_stage_structure_cache():
+        carb.log_info("[Aquacast] Stage structure cache disabled")
+        return None
     if _stage_structure_cache is None:
         _stage_structure_cache = StageStructureCache()
         _stage_structure_cache.start()
@@ -285,22 +316,79 @@ def get_stage_structure():
     return _stage_structure_cache.get_snapshot()
 
 
+def _build_topology_name_index(snapshot):
+    index = {}
+    path_list = []
+    if isinstance(snapshot, dict):
+        path_list = snapshot.get("prim_paths") or snapshot.get("paths") or []
+    elif isinstance(snapshot, list):
+        path_list = snapshot
+
+    if path_list:
+        for raw_path in path_list:
+            path = str(raw_path)
+            node_name = path.rstrip("/").rsplit("/", 1)[-1]
+            if node_name and path:
+                index.setdefault(node_name, []).append(path)
+    else:
+        stack = list(snapshot.get("tree", []) or []) if isinstance(snapshot, dict) else []
+        while stack:
+            node = stack.pop()
+            node_name = node.get("name")
+            path = node.get("path")
+            if node_name and path:
+                index.setdefault(node_name, []).append(path)
+            stack.extend(node.get("children", []) or [])
+
+    for paths in index.values():
+        paths.sort()
+    return index
+
+
+def _load_topology_json_snapshot():
+    topology_path = get_stage_topology_json_path()
+    if not topology_path.exists():
+        _topology_json_cache.update({"path": topology_path, "mtime_ns": None, "snapshot": {}, "name_index": {}})
+        return {}, {}
+
+    try:
+        mtime_ns = topology_path.stat().st_mtime_ns
+        if (
+            _topology_json_cache.get("path") == topology_path
+            and _topology_json_cache.get("mtime_ns") == mtime_ns
+        ):
+            return _topology_json_cache.get("snapshot", {}), _topology_json_cache.get("name_index", {})
+
+        with topology_path.open("r", encoding="utf-8") as stream:
+            raw_snapshot = json.load(stream)
+        if isinstance(raw_snapshot, list):
+            snapshot = {"prim_paths": [str(path) for path in raw_snapshot if path]}
+        elif isinstance(raw_snapshot, dict):
+            snapshot = raw_snapshot
+        else:
+            snapshot = {}
+        name_index = _build_topology_name_index(snapshot)
+        _topology_json_cache.update({
+            "path": topology_path,
+            "mtime_ns": mtime_ns,
+            "snapshot": snapshot,
+            "name_index": name_index,
+        })
+        return snapshot, name_index
+    except Exception as exc:
+        carb.log_warn(f"[Aquacast] Failed to read stage topology JSON: {topology_path} ({exc})")
+        _topology_json_cache.update({"path": topology_path, "mtime_ns": None, "snapshot": {}, "name_index": {}})
+        return {}, {}
+
+
 def _get_topology_snapshot():
     if _stage_structure_cache is not None:
         snapshot = _stage_structure_cache.get_snapshot()
         if snapshot.get("tree"):
             return snapshot
 
-    topology_path = get_stage_topology_json_path()
-    if not topology_path.exists():
-        return {}
-
-    try:
-        with topology_path.open("r", encoding="utf-8") as stream:
-            return json.load(stream)
-    except Exception as exc:
-        carb.log_warn(f"[Aquacast] Failed to read stage topology JSON: {topology_path} ({exc})")
-        return {}
+    snapshot, _name_index = _load_topology_json_snapshot()
+    return snapshot
 
 
 def _iter_topology_nodes(nodes):
@@ -310,7 +398,19 @@ def _iter_topology_nodes(nodes):
 
 
 def _get_topology_paths_by_name(name):
+    if _stage_structure_cache is None:
+        _snapshot, name_index = _load_topology_json_snapshot()
+        return list(name_index.get(name, []))
+
     snapshot = _get_topology_snapshot()
+    path_list = snapshot.get("prim_paths") or snapshot.get("paths") or []
+    if path_list:
+        return [
+            str(path)
+            for path in path_list
+            if str(path).rstrip("/").rsplit("/", 1)[-1] == name
+        ]
+
     return [
         node.get("path", "")
         for node in _iter_topology_nodes(snapshot.get("tree", []))
@@ -574,7 +674,12 @@ def _set_fish_transform(prim, position, direction, *, fish=None, dt=None, realis
             stage.SetEditTarget(previous_edit_target)
 
 
-def _compute_water_bounds_from_prim(water_prim):
+def _water_up_axis_index():
+    up_axis_name = str(get_global_config("FISH_WATER_UP_AXIS", get_global_config("TEMP_PARTICLE_UP_AXIS", "Y")) or "Y").upper()
+    return {"X": 0, "Y": 1, "Z": 2}.get(up_axis_name, 1)
+
+
+def _compute_water_bounds_with_axes(water_prim):
     bbox_cache = UsdGeom.BBoxCache(
         Usd.TimeCode.Default(),
         [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
@@ -588,14 +693,24 @@ def _compute_water_bounds_from_prim(water_prim):
         (min_v[1] + max_v[1]) * 0.5,
         (min_v[2] + max_v[2]) * 0.5,
     )
-    radius = max(0.001, min(max_v[0] - min_v[0], max_v[1] - min_v[1]) * 0.5)
-    vertical_margin = (max_v[2] - min_v[2]) * 0.08
-    return center, radius, min_v[2] + vertical_margin, max_v[2] - vertical_margin
+    up_axis = _water_up_axis_index()
+    radial_axes = [index for index in range(3) if index != up_axis]
+    size = [max_v[index] - min_v[index] for index in range(3)]
+    radius = max(0.001, min(size[radial_axes[0]], size[radial_axes[1]]) * 0.5)
+    vertical_margin = size[up_axis] * 0.08
+    return center, radius, min_v[up_axis] + vertical_margin, max_v[up_axis] - vertical_margin, up_axis, radial_axes
+
+
+def _compute_water_bounds_from_prim(water_prim):
+    center, radius, min_up, max_up, _up_axis, _radial_axes = _compute_water_bounds_with_axes(water_prim)
+    return center, radius, min_up, max_up
 
 
 def _find_water_prim_for_tank(stage, tank_path):
     tank = stage.GetPrimAtPath(tank_path)
     if tank and tank.IsValid():
+        if tank.GetName() == "Water":
+            return tank
         candidates = []
         for prim in Usd.PrimRange(tank):
             if prim and prim.IsValid() and prim.GetName() == "Water":
@@ -654,17 +769,20 @@ def _spawn_fish_in_tank(
     if count <= 0:
         return []
 
-    if water_bounds is None:
-        computed = _compute_water_bounds_for_tank(stage, tank_path)
-        if computed is None:
-            carb.log_warn(f"[Aquacast] Dynamic fish skipped: Water prim not found for tank={tank_path}")
-            return []
-        center, radius, min_z, max_z = computed
-    else:
-        radius, min_z, max_z = water_bounds
-        center = Gf.Vec3d(0.0, 0.0, 0.0)
+    water_prim = _find_water_prim_for_tank(stage, tank_path)
+    if not water_prim or not water_prim.IsValid():
+        carb.log_warn(f"[Aquacast] Dynamic fish skipped: Water prim not found for tank={tank_path}")
+        return []
 
-    fishes_path = Sdf.Path(tank_path).AppendChild("InWater").AppendChild("Fishes")
+    if water_bounds is None:
+        center, radius, min_up, max_up, up_axis, radial_axes = _compute_water_bounds_with_axes(water_prim)
+    else:
+        radius, min_up, max_up = water_bounds
+        center = Gf.Vec3d(0.0, 0.0, 0.0)
+        up_axis = 2
+        radial_axes = [0, 1]
+
+    fishes_path = water_prim.GetPath().GetParentPath().AppendChild("Fishes")
     session_layer = stage.GetSessionLayer()
     edit_target = session_layer if session_layer is not None else stage.GetRootLayer()
     created = []
@@ -689,7 +807,7 @@ def _spawn_fish_in_tank(
         prefix = str(get_global_config("FISH_NAME_PREFIX", "Fish_"))
         indices = dynamic_fish_spawn.next_fish_indices([], count, prefix)
         asset_choices = dynamic_fish_spawn.assign_assets(count, mix_ratio, seed)
-        positions = dynamic_fish_spawn.sample_positions(count, radius, min_z, max_z, seed + 1)
+        positions = dynamic_fish_spawn.sample_positions(count, radius, min_up, max_up, seed + 1)
         yaws = dynamic_fish_spawn.sample_yaws(count, seed + 2)
 
         for index, asset_index, position, yaw in zip(indices, asset_choices, positions, yaws):
@@ -708,8 +826,12 @@ def _spawn_fish_in_tank(
 
                 xform = UsdGeom.Xformable(fish_prim)
                 xform.ClearXformOpOrder()
+                coords = [float(center[0]), float(center[1]), float(center[2])]
+                coords[radial_axes[0]] = float(center[radial_axes[0]] + position[0])
+                coords[radial_axes[1]] = float(center[radial_axes[1]] + position[1])
+                coords[up_axis] = float(position[2])
                 xform.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
-                    Gf.Vec3d(center[0] + position[0], center[1] + position[1], position[2])
+                    Gf.Vec3d(coords[0], coords[1], coords[2])
                 )
                 xform.AddRotateXYZOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(
                     Gf.Vec3f(0.0, 0.0, float(yaw))
@@ -761,7 +883,9 @@ class DynamicFishSpawner:
             return
         root_layer = stage.GetRootLayer()
         stage_key = root_layer.identifier if root_layer else ""
-        if stage_key and self._spawned_stage_key == stage_key:
+        seed_config = get_global_config("FISH_RNG_SEED", 42)
+        random_seed_mode = _fish_rng_seed_is_random(seed_config)
+        if stage_key and self._spawned_stage_key == stage_key and not random_seed_mode:
             return
 
         default_count = int(get_global_config("DYNAMIC_FISH_COUNT_PER_TANK", 0))
@@ -785,11 +909,11 @@ class DynamicFishSpawner:
             _resolve_dynamic_asset("SALMON_1_ASSET", str(get_global_config("DYNAMIC_FISH_SALMON_1_PATH", "~/cs-project/assets/salmon_1.usd"))),
             _resolve_dynamic_asset("SALMON_2_ASSET", str(get_global_config("DYNAMIC_FISH_SALMON_2_PATH", "~/cs-project/assets/salmon_2.usd"))),
         )
-        seed = int(get_global_config("FISH_RNG_SEED", 42))
+        seed = _resolve_fish_rng_seed(seed_config)
 
         tank_paths = self._discover_tanks(stage)
         if not tank_paths:
-            carb.log_info("[Aquacast] Dynamic fish skipped: no FishTank prims found")
+            carb.log_info("[Aquacast] Dynamic fish skipped: no Water prims found")
             return
 
         total = 0
@@ -816,18 +940,22 @@ class DynamicFishSpawner:
         if total and _fish_swim_controller is not None:
             _fish_swim_controller._initialized = False
             asyncio.ensure_future(_fish_swim_controller.initialize_after_frames(1))
-
     def _discover_tanks(self, stage):
-        pattern = re.compile(r"^FishTank(_\d+)?$")
-        tanks = []
+        waters = []
+        configured = str(get_global_config("WATER_PRIM_PATH", "") or "").strip()
+        if configured:
+            prim = stage.GetPrimAtPath(configured)
+            if prim and prim.IsValid():
+                return [prim.GetPath().pathString]
+
         for prim in stage.Traverse():
-            if not prim or not prim.IsValid() or not pattern.match(prim.GetName()):
+            if not prim or not prim.IsValid() or prim.GetName() != "Water":
                 continue
             path = prim.GetPath().pathString
-            if "/AquariumComponents/" in path:
-                tanks.append(path)
-        return sorted(tanks)
-
+            if "/Looks/" in path or "/Materials/" in path:
+                continue
+            waters.append(path)
+        return sorted(waters)
 
 class FishSwimController:
     """Animate numbered Fish prims inside the Water cylinder."""
@@ -843,6 +971,9 @@ class FishSwimController:
         self._water_radius = 1.0
         self._water_min_z = 0.0
         self._water_max_z = 1.0
+        self._water_up_axis = _water_up_axis_index()
+        self._water_radial_axes = [index for index in range(3) if index != self._water_up_axis]
+        self._water_bounds_by_fishes_parent = {}
         self._warned_missing_water = False
         self._next_init_retry_time = 0.0
 
@@ -883,15 +1014,20 @@ class FishSwimController:
             self._schedule_init_retry()
             return
 
-        water_prim = self._find_water_prim(stage)
-        if not water_prim or not water_prim.IsValid():
+        water_prims = self._find_water_prims(stage)
+        if not water_prims:
             self._warn_missing_water_once(stage)
             self._initialized = False
             self._schedule_init_retry()
             return
 
         self._warned_missing_water = False
-        self._read_water_bounds(water_prim)
+        self._water_bounds_by_fishes_parent = {}
+        for water_prim in water_prims:
+            bounds = self._read_water_bounds_values(water_prim)
+            fishes_parent_path = water_prim.GetPath().GetParentPath().AppendChild("Fishes").pathString
+            self._water_bounds_by_fishes_parent[fishes_parent_path] = bounds
+        self._apply_water_bounds(self._water_bounds_by_fishes_parent[next(iter(self._water_bounds_by_fishes_parent))])
         fish_prims = self._find_fish_prims(stage)
         self._fish = [self._make_fish_state(prim, index) for index, prim in enumerate(fish_prims)]
         self._initialized = bool(self._fish)
@@ -900,6 +1036,35 @@ class FishSwimController:
             f"[Aquacast] Fish swimming initialized: fish_count={len(self._fish)}, "
             f"water_radius={self._water_radius:.3f}"
         )
+
+    def _find_water_prims(self, stage):
+        configured = str(get_global_config("WATER_PRIM_PATH", "") or "").strip()
+        if configured:
+            prim = stage.GetPrimAtPath(configured)
+            return [prim] if prim and prim.IsValid() else []
+
+        water_prims = []
+        seen = set()
+        for path in _get_topology_paths_by_name("Water"):
+            prim = stage.GetPrimAtPath(path)
+            if not prim or not prim.IsValid():
+                continue
+            path_string = prim.GetPath().pathString
+            if "/Looks/" in path_string or "/Materials/" in path_string:
+                continue
+            seen.add(path_string)
+            water_prims.append(prim)
+
+        for prim in stage.Traverse():
+            if not prim or not prim.IsValid() or prim.GetName() != "Water":
+                continue
+            path_string = prim.GetPath().pathString
+            if path_string in seen or "/Looks/" in path_string or "/Materials/" in path_string:
+                continue
+            seen.add(path_string)
+            water_prims.append(prim)
+
+        return sorted(water_prims, key=lambda prim: prim.GetPath().pathString)
 
     def _find_water_prim(self, stage):
         configured_path = str(get_global_config("WATER_PRIM_PATH", "") or "")
@@ -964,12 +1129,36 @@ class FishSwimController:
         retry_seconds = float(get_global_config("FISH_INIT_RETRY_SECONDS", 1.0))
         self._next_init_retry_time = time.monotonic() + max(0.1, retry_seconds)
 
-    def _read_water_bounds(self, water_prim):
-        center, radius, min_z, max_z = _compute_water_bounds_from_prim(water_prim)
+    def _read_water_bounds_values(self, water_prim):
+        return _compute_water_bounds_with_axes(water_prim)
+
+    def _apply_water_bounds(self, bounds):
+        center, radius, min_up, max_up, up_axis, radial_axes = bounds
         self._water_center = center
         self._water_radius = radius
-        self._water_min_z = min_z
-        self._water_max_z = max_z
+        self._water_min_z = min_up
+        self._water_max_z = max_up
+        self._water_up_axis = up_axis
+        self._water_radial_axes = list(radial_axes)
+
+    def _read_water_bounds(self, water_prim):
+        bounds = self._read_water_bounds_values(water_prim)
+        self._apply_water_bounds(bounds)
+        return bounds
+
+    def _bounds_for_fish_prim(self, prim):
+        parent_path = prim.GetPath().GetParentPath().pathString
+        return self._water_bounds_by_fishes_parent.get(
+            parent_path,
+            (
+                self._water_center,
+                self._water_radius,
+                self._water_min_z,
+                self._water_max_z,
+                self._water_up_axis,
+                list(self._water_radial_axes),
+            ),
+        )
 
     def _find_fish_prims(self, stage):
         prefix = str(get_global_config("FISH_NAME_PREFIX", "Fish_"))
@@ -1020,13 +1209,25 @@ class FishSwimController:
     def _make_fish_state(self, prim, index):
         animation_prim = _get_animation_target_prim(prim)
         position = _xform_translation(animation_prim)
+        bounds = self._bounds_for_fish_prim(prim)
+        center, radius, min_up, max_up, up_axis, radial_axes = bounds
         angle = index * math.tau / max(1, 3)
-        initial_direction = _normalized(Gf.Vec3d(-math.cos(angle), -math.sin(angle), 0.08 * math.sin(index + 1)))
+        direction_values = [0.0, 0.0, 0.0]
+        direction_values[radial_axes[0]] = -math.cos(angle)
+        direction_values[radial_axes[1]] = -math.sin(angle)
+        direction_values[up_axis] = 0.08 * math.sin(index + 1)
+        initial_direction = _normalized(Gf.Vec3d(*direction_values))
         state = {
             "root_prim": prim,
             "prim": animation_prim,
-            "position": self._clamp_position(position, initial_direction),
+            "position": self._clamp_position(position, initial_direction, bounds=bounds),
             "direction": initial_direction,
+            "water_center": center,
+            "water_radius": radius,
+            "water_min_up": min_up,
+            "water_max_up": max_up,
+            "water_up_axis": up_axis,
+            "water_radial_axes": list(radial_axes),
             "target_direction": initial_direction,
             "phase": index * 1.618,
             "head_length": self._estimate_head_length(animation_prim),
@@ -1042,8 +1243,8 @@ class FishSwimController:
             )
             state.update(traits)
 
-            water_height = max(1e-6, self._water_max_z - self._water_min_z)
-            state["preferred_z"] = self._water_min_z + water_height * state["depth_band_center_norm"]
+            water_height = max(1e-6, max_up - min_up)
+            state["preferred_up"] = min_up + water_height * state["depth_band_center_norm"]
             state["band_half"] = water_height * state["depth_band_half_width_norm"]
 
         return state
@@ -1084,9 +1285,29 @@ class FishSwimController:
         direction_lerp_rate = float(get_global_config("FISH_DIRECTION_LERP_RATE", 4.0))
         direction_lerp_t = _lerp_alpha(direction_lerp_rate, dt)
         max_turn = float(get_global_config("FISH_MAX_TURN_RADIANS_PER_SECOND", 1.8)) * dt
+        separation_radius = self._water_radius * float(get_global_config("FISH_SEPARATION_RADIUS_RATIO", 0.18))
+        positions = np.asarray(
+            [[float(fish["position"][0]), float(fish["position"][1]), float(fish["position"][2])] for fish in self._fish],
+            dtype=np.float64,
+        )
+        directions = np.asarray(
+            [[float(fish["direction"][0]), float(fish["direction"][1]), float(fish["direction"][2])] for fish in self._fish],
+            dtype=np.float64,
+        )
+        separation_arr, alignment_arr, cohesion_arr, neighbor_counts = fish_dynamics.compute_flock_vectors(
+            positions,
+            directions,
+            separation_radius,
+        )
+        flock_cache = {
+            "separation": separation_arr,
+            "alignment": alignment_arr,
+            "cohesion_center": cohesion_arr,
+            "neighbor_counts": neighbor_counts,
+        }
 
-        for fish in self._fish:
-            desired = self._desired_direction(fish, now, realism_on)
+        for index, fish in enumerate(self._fish):
+            desired = self._desired_direction(fish, now, realism_on, flock_cache, index)
             fish["target_direction"] = _lerp_direction(fish["target_direction"], desired, direction_lerp_t)
             fish["prev_direction"] = fish["direction"]
             fish["direction"] = _rotate_toward(fish["direction"], fish["target_direction"], max_turn)
@@ -1104,7 +1325,7 @@ class FishSwimController:
                 speed = base_speed
 
             next_position = fish["position"] + fish["direction"] * speed * dt
-            fish["position"] = self._clamp_position(next_position, fish["direction"], fish["head_length"])
+            fish["position"] = self._clamp_position(next_position, fish["direction"], fish["head_length"], fish=fish)
             _set_fish_transform(
                 fish["prim"],
                 fish["position"],
@@ -1114,107 +1335,143 @@ class FishSwimController:
                 realism_on=realism_on,
             )
 
-    def _desired_direction(self, fish, now, realism_on=True):
+    def _desired_direction(self, fish, now, realism_on=True, flock_cache=None, index=0):
         position = fish["position"]
         direction = fish["direction"]
 
-        separation = Gf.Vec3d(0.0, 0.0, 0.0)
-        alignment = Gf.Vec3d(0.0, 0.0, 0.0)
-        cohesion_center = Gf.Vec3d(0.0, 0.0, 0.0)
-        neighbor_count = 0
-        separation_radius = self._water_radius * float(get_global_config("FISH_SEPARATION_RADIUS_RATIO", 0.18))
-
-        for other in self._fish:
-            if other is fish:
-                continue
-            offset = position - other["position"]
-            distance = _length(offset)
-            if distance <= 1e-6 or distance > separation_radius:
-                continue
-            separation += _normalized(offset) * (1.0 - distance / separation_radius)
-            alignment += other["direction"]
-            cohesion_center += other["position"]
-            neighbor_count += 1
-
         flock = Gf.Vec3d(0.0, 0.0, 0.0)
-        if neighbor_count:
-            cohesion = _normalized((cohesion_center / neighbor_count) - position, direction)
-            alignment = _normalized(alignment / neighbor_count, direction)
-            separation = _normalized(separation, direction)
-            flock += cohesion * float(get_global_config("FISH_COHESION_WEIGHT", 0.18))
-            flock += alignment * float(get_global_config("FISH_ALIGNMENT_WEIGHT", 0.25))
-            flock += separation * float(get_global_config("FISH_SEPARATION_WEIGHT", 0.42))
+        if flock_cache is not None:
+            neighbor_count = int(flock_cache["neighbor_counts"][index])
+            if neighbor_count:
+                cohesion_center = Gf.Vec3d(*((flock_cache["cohesion_center"][index] / neighbor_count).tolist()))
+                alignment_vec = Gf.Vec3d(*((flock_cache["alignment"][index] / neighbor_count).tolist()))
+                separation_vec = Gf.Vec3d(*(flock_cache["separation"][index].tolist()))
+
+                cohesion = _normalized(cohesion_center - position, direction)
+                alignment = _normalized(alignment_vec, direction)
+                separation = _normalized(separation_vec, direction)
+                flock += cohesion * float(get_global_config("FISH_COHESION_WEIGHT", 0.18))
+                flock += alignment * float(get_global_config("FISH_ALIGNMENT_WEIGHT", 0.25))
+                flock += separation * float(get_global_config("FISH_SEPARATION_WEIGHT", 0.42))
 
         wander = self._wander_vector(fish, now, realism_on) * float(get_global_config("FISH_WANDER_WEIGHT", 0.20))
         boundary = self._boundary_steering(fish) * float(get_global_config("FISH_BOUNDARY_WEIGHT", 1.35))
 
         depth = Gf.Vec3d(0.0, 0.0, 0.0)
-        if realism_on and "preferred_z" in fish:
+        if realism_on and "preferred_up" in fish:
+            up_axis = int(fish.get("water_up_axis", self._water_up_axis))
             strength = fish_dynamics.depth_attraction_strength(
-                position_z=fish["position"][2],
-                preferred_z=fish["preferred_z"],
+                position_z=fish["position"][up_axis],
+                preferred_z=fish["preferred_up"],
                 band_half=fish["band_half"],
             )
-            depth = Gf.Vec3d(0.0, 0.0, strength) * float(get_global_config("FISH_DEPTH_BAND_WEIGHT", 0.45))
+            depth_values = [0.0, 0.0, 0.0]
+            depth_values[up_axis] = strength
+            depth = Gf.Vec3d(*depth_values) * float(get_global_config("FISH_DEPTH_BAND_WEIGHT", 0.45))
 
         return _normalized(direction + flock + wander + boundary + depth, direction)
 
+
     def _wander_vector(self, fish, now, realism_on=True):
         phase = fish["phase"]
-        horizontal = Gf.Vec3d(math.cos(now * 0.7 + phase), math.sin(now * 0.9 + phase * 1.7), 0.0)
+        up_axis = int(fish.get("water_up_axis", self._water_up_axis))
+        radial_axes = list(fish.get("water_radial_axes", self._water_radial_axes))
+        horizontal_values = [0.0, 0.0, 0.0]
+        horizontal_values[radial_axes[0]] = math.cos(now * 0.7 + phase)
+        horizontal_values[radial_axes[1]] = math.sin(now * 0.9 + phase * 1.7)
+        horizontal = Gf.Vec3d(*horizontal_values)
         if realism_on and "vertical_wander_freq_hz" in fish:
-            vertical_z = math.sin(
+            vertical_up = math.sin(
                 2.0 * math.pi * fish["vertical_wander_freq_hz"] * now + fish["vertical_wander_phase"]
             )
         else:
-            vertical_z = math.sin(now * 0.55 + phase)
-        vertical = Gf.Vec3d(0.0, 0.0, vertical_z)
+            vertical_up = math.sin(now * 0.55 + phase)
+        vertical_values = [0.0, 0.0, 0.0]
+        vertical_values[up_axis] = vertical_up
+        vertical = Gf.Vec3d(*vertical_values)
         return _normalized(horizontal + vertical * float(get_global_config("FISH_VERTICAL_WANDER_WEIGHT", 0.12)))
 
     def _boundary_steering(self, fish):
         position = fish["position"]
         direction = fish["direction"]
+        center = fish.get("water_center", self._water_center)
+        min_up = float(fish.get("water_min_up", self._water_min_z))
+        max_up = float(fish.get("water_max_up", self._water_max_z))
+        up_axis = int(fish.get("water_up_axis", self._water_up_axis))
+        radial_axes = list(fish.get("water_radial_axes", self._water_radial_axes))
         head = position + direction * fish["head_length"]
-        rel = Gf.Vec3d(head[0] - self._water_center[0], head[1] - self._water_center[1], 0.0)
+        rel_values = [0.0, 0.0, 0.0]
+        for axis in radial_axes:
+            rel_values[axis] = head[axis] - center[axis]
+        rel = Gf.Vec3d(*rel_values)
         radial = _length(rel)
-        inward = _normalized(Gf.Vec3d(-rel[0], -rel[1], 0.0), direction)
+        inward = _normalized(Gf.Vec3d(-rel[0], -rel[1], -rel[2]), direction)
 
-        safe_radius = self._safe_radius(fish["head_length"])
+        safe_radius = self._safe_radius(fish["head_length"], fish=fish)
         start_radius = safe_radius * float(get_global_config("FISH_BOUNDARY_START_RATIO", 0.68))
         wall_t = _smoothstep(start_radius, safe_radius, radial)
 
         tangent_sign = 1.0 if math.sin(fish["phase"]) >= 0.0 else -1.0
-        tangent = Gf.Vec3d(-inward[1] * tangent_sign, inward[0] * tangent_sign, 0.0)
+        tangent_values = [0.0, 0.0, 0.0]
+        tangent_values[radial_axes[0]] = -inward[radial_axes[1]] * tangent_sign
+        tangent_values[radial_axes[1]] = inward[radial_axes[0]] * tangent_sign
+        tangent = Gf.Vec3d(*tangent_values)
         smooth_turn = 0.5 - 0.5 * math.cos(math.pi * wall_t)
         steer = inward * smooth_turn + tangent * (1.0 - smooth_turn) * wall_t * 0.45
 
-        z_mid = (self._water_min_z + self._water_max_z) * 0.5
-        if head[2] > self._water_max_z:
-            steer += Gf.Vec3d(0.0, 0.0, -1.0) * _smoothstep(z_mid, self._water_max_z, head[2])
-        elif head[2] < self._water_min_z:
-            steer += Gf.Vec3d(0.0, 0.0, 1.0) * _smoothstep(self._water_min_z, z_mid, head[2])
+        up_mid = (min_up + max_up) * 0.5
+        if head[up_axis] > max_up:
+            down_values = [0.0, 0.0, 0.0]
+            down_values[up_axis] = -1.0
+            steer += Gf.Vec3d(*down_values) * _smoothstep(up_mid, max_up, head[up_axis])
+        elif head[up_axis] < min_up:
+            up_values = [0.0, 0.0, 0.0]
+            up_values[up_axis] = 1.0
+            steer += Gf.Vec3d(*up_values) * _smoothstep(min_up, up_mid, head[up_axis])
 
         return steer
 
-    def _clamp_position(self, position, direction, head_length=0.0):
-        safe_radius = self._safe_radius(head_length)
+    def _clamp_position(self, position, direction, head_length=0.0, fish=None, bounds=None):
+        if bounds is not None:
+            center, radius, min_up, max_up, up_axis, radial_axes = bounds
+        elif fish is not None:
+            center = fish.get("water_center", self._water_center)
+            radius = float(fish.get("water_radius", self._water_radius))
+            min_up = float(fish.get("water_min_up", self._water_min_z))
+            max_up = float(fish.get("water_max_up", self._water_max_z))
+            up_axis = int(fish.get("water_up_axis", self._water_up_axis))
+            radial_axes = list(fish.get("water_radial_axes", self._water_radial_axes))
+        else:
+            center = self._water_center
+            radius = self._water_radius
+            min_up = self._water_min_z
+            max_up = self._water_max_z
+            up_axis = self._water_up_axis
+            radial_axes = list(self._water_radial_axes)
+
+        safe_radius = self._safe_radius(head_length, radius=radius)
         head = position + direction * head_length
-        rel = Gf.Vec3d(head[0] - self._water_center[0], head[1] - self._water_center[1], 0.0)
+        rel_values = [0.0, 0.0, 0.0]
+        for axis in radial_axes:
+            rel_values[axis] = head[axis] - center[axis]
+        rel = Gf.Vec3d(*rel_values)
         radial = _length(rel)
         if radial > safe_radius:
             rel = _normalized(rel) * safe_radius
-            head = Gf.Vec3d(self._water_center[0] + rel[0], self._water_center[1] + rel[1], head[2])
+            head_values = [float(head[0]), float(head[1]), float(head[2])]
+            for axis in radial_axes:
+                head_values[axis] = float(center[axis] + rel[axis])
+            head = Gf.Vec3d(*head_values)
             position = head - direction * head_length
 
-        return Gf.Vec3d(
-            position[0],
-            position[1],
-            _clamp(position[2], self._water_min_z, self._water_max_z),
-        )
+        position_values = [float(position[0]), float(position[1]), float(position[2])]
+        position_values[up_axis] = _clamp(position_values[up_axis], min_up, max_up)
+        return Gf.Vec3d(*position_values)
 
-    def _safe_radius(self, head_length):
+    def _safe_radius(self, head_length, fish=None, radius=None):
         margin_ratio = float(get_global_config("FISH_BOUNDARY_MARGIN_RATIO", 0.12))
-        return max(self._water_radius * 0.2, self._water_radius * (1.0 - margin_ratio) - head_length)
+        water_radius = float(radius if radius is not None else fish.get("water_radius", self._water_radius) if fish is not None else self._water_radius)
+        return max(water_radius * 0.2, water_radius * (1.0 - margin_ratio) - head_length)
 
     def _on_stage_event(self, event):
         event_type = event.type
@@ -1303,6 +1560,15 @@ class StageStructureCache:
     def _build_name_tree(self, stage):
         nodes_by_path = {}
         roots = []
+        include_transforms = bool(get_global_config("STAGE_TOPOLOGY_INCLUDE_TRANSFORMS", True))
+        include_bounds = bool(get_global_config("STAGE_TOPOLOGY_INCLUDE_BOUNDS", True))
+        bbox_cache = None
+        if include_bounds:
+            bbox_cache = UsdGeom.BBoxCache(
+                Usd.TimeCode.Default(),
+                [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+                useExtentsHint=True,
+            )
 
         for prim in Usd.PrimRange.Stage(stage):
             if not prim or not prim.IsValid() or prim.GetPath().pathString == "/":
@@ -1312,8 +1578,13 @@ class StageStructureCache:
             node = {
                 "name": prim.GetName(),
                 "path": path,
+                "type_name": prim.GetTypeName(),
                 "children": [],
             }
+            if include_transforms:
+                node.update(self._prim_transform_summary(prim))
+            if bbox_cache is not None:
+                node.update(self._prim_bounds_summary(bbox_cache, prim))
             nodes_by_path[path] = node
 
             parent_path = prim.GetPath().GetParentPath().pathString
@@ -1324,6 +1595,67 @@ class StageStructureCache:
                 roots.append(node)
 
         return roots
+
+    def _prim_transform_summary(self, prim):
+        summary = {}
+        try:
+            xformable = UsdGeom.Xformable(prim)
+        except Exception:
+            return summary
+
+        try:
+            local_matrix = self._local_transform_matrix(xformable)
+            if local_matrix is not None:
+                summary["local_translation"] = self._translation_to_json(local_matrix.ExtractTranslation())
+        except Exception:
+            pass
+
+        try:
+            world_matrix = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            summary["world_translation"] = self._translation_to_json(world_matrix.ExtractTranslation())
+        except Exception:
+            pass
+
+        return summary
+
+    def _prim_bounds_summary(self, bbox_cache, prim):
+        try:
+            aligned = bbox_cache.ComputeWorldBound(prim).ComputeAlignedBox()
+            minimum = aligned.GetMin()
+            maximum = aligned.GetMax()
+            if any(not math.isfinite(float(value)) for value in list(minimum) + list(maximum)):
+                return {}
+            center = Gf.Vec3d(
+                (minimum[0] + maximum[0]) * 0.5,
+                (minimum[1] + maximum[1]) * 0.5,
+                (minimum[2] + maximum[2]) * 0.5,
+            )
+            return {
+                "world_bbox_center": self._translation_to_json(center),
+                "world_bbox_min": self._translation_to_json(minimum),
+                "world_bbox_max": self._translation_to_json(maximum),
+            }
+        except Exception:
+            return {}
+
+
+    def _local_transform_matrix(self, xformable):
+        for getter in (
+            lambda: xformable.GetLocalTransformation(Usd.TimeCode.Default()),
+            lambda: xformable.GetLocalTransformation(),
+        ):
+            try:
+                result = getter()
+            except TypeError:
+                continue
+            if isinstance(result, tuple):
+                return result[0]
+            return result
+        return None
+
+    def _translation_to_json(self, translation):
+        precision = int(get_global_config("STAGE_TOPOLOGY_TRANSFORM_PRECISION", 6))
+        return [round(float(translation[index]), precision) for index in range(3)]
 
     def print_topology(self):
         carb.log_info(f"[Aquacast] Stage topology: {self.stage_name}")
@@ -1345,16 +1677,25 @@ class StageStructureCache:
             lines.extend(self._format_tree_lines(node["children"], depth + 1))
         return lines
 
+    def _flatten_topology_paths(self, nodes):
+        paths = []
+        for node in nodes or []:
+            path = node.get("path")
+            if path:
+                paths.append(path)
+            paths.extend(self._flatten_topology_paths(node.get("children", [])))
+        return paths
+
     def export_topology_json(self):
         output_path = get_stage_topology_json_path()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = self.get_snapshot()
+        payload = self._flatten_topology_paths(self.tree)
 
         with output_path.open("w", encoding="utf-8") as stream:
             json.dump(payload, stream, indent=2)
             stream.write("\n")
 
-        carb.log_info(f"[Aquacast] Stage topology JSON exported: {output_path}")
+        carb.log_info(f"[Aquacast] Stage topology path list exported: {output_path}")
 
     def _on_stage_event(self, event):
         event_type = event.type
@@ -1396,6 +1737,7 @@ class WaterTempController:
         self._prev_rgb = None
         self._water_prim = None
         self._particles_prim = None
+        self._particle_sets = []
         self._particle_color_attr = None
         self._particle_display_color_attr = None
         self._particle_display_color_attrs = []
@@ -1434,6 +1776,7 @@ class WaterTempController:
         self._display_color_attr = None
         self._water_prim = None
         self._particles_prim = None
+        self._particle_sets = []
         self._particle_color_attr = None
         self._particle_display_color_attr = None
         self._particle_display_color_attrs = []
@@ -1465,6 +1808,7 @@ class WaterTempController:
             self._display_color_attr = None
             self._water_prim = None
             self._particles_prim = None
+            self._particle_sets = []
             self._particle_color_attr = None
             self._particle_display_color_attr = None
             self._particle_display_color_attrs = []
@@ -1514,11 +1858,12 @@ class WaterTempController:
             )
 
     def _bind_temperature_particles(self, stage):
-        water_prim = self._find_water_prim(stage)
-        if not water_prim or not water_prim.IsValid():
+        water_prims = self._find_water_prims(stage)
+        if not water_prims:
             self._warn_missing_water_once()
             self._water_prim = None
             self._particles_prim = None
+            self._particle_sets = []
             self._particle_color_attr = None
             self._particle_display_color_attr = None
             self._particle_display_color_attrs = []
@@ -1528,25 +1873,70 @@ class WaterTempController:
             return
 
         self._warned_missing_water = False
-        self._water_prim = water_prim
+        self._water_prim = water_prims[0]
         if (
-            self._particles_prim
-            and self._particles_prim.IsValid()
-            and self._particle_color_attr is not None
-            and self._particle_heat_weights
+            self._particle_sets
+            and len(self._particle_sets) == len(water_prims)
+            and all(item.get("particles_prim") and item["particles_prim"].IsValid() for item in self._particle_sets)
         ):
             return
+
+        particle_sets = []
         try:
-            self._author_temperature_particles(stage, water_prim)
+            for water_prim in water_prims:
+                self._author_temperature_particles(stage, water_prim)
+                particle_sets.append(self._capture_particle_set(water_prim))
+            self._particle_sets = particle_sets
+            self._particle_positions = [pos for item in particle_sets for pos in item.get("positions", [])]
+            self._particle_heat_weights = [weight for item in particle_sets for weight in item.get("heat_weights", [])]
+            self._particle_temperatures = [temp for item in particle_sets for temp in item.get("temperatures", [])]
         except Exception as exc:
             carb.log_warn(f"[Aquacast Temp] Failed to author temperature particles: {exc}")
             self._particles_prim = None
+            self._particle_sets = []
             self._particle_color_attr = None
             self._particle_display_color_attr = None
             self._particle_display_color_attrs = []
             self._particle_temperature_attr = None
             self._particle_positions = []
             self._particle_heat_weights = []
+
+    def _capture_particle_set(self, water_prim):
+        return {
+            "water_prim": water_prim,
+            "particles_prim": self._particles_prim,
+            "color_attr": self._particle_color_attr,
+            "display_color_attr": self._particle_display_color_attr,
+            "display_color_attrs": list(self._particle_display_color_attrs or []),
+            "proto_indices_attr": self._particle_proto_indices_attr,
+            "prototype_color_attrs": list(self._particle_prototype_color_attrs or []),
+            "color_palette": list(self._particle_color_palette or []),
+            "temperature_attr": self._particle_temperature_attr,
+            "positions": list(self._particle_positions or []),
+            "heat_weights": list(self._particle_heat_weights or []),
+            "temperatures": list(self._particle_temperatures or []),
+            "water_radius": self._particle_water_radius,
+            "water_height": self._particle_water_height,
+            "last_update_time": self._last_particle_update_time,
+            "elapsed": self._particle_elapsed,
+        }
+
+    def _restore_particle_set(self, particle_set):
+        self._particles_prim = particle_set.get("particles_prim")
+        self._particle_color_attr = particle_set.get("color_attr")
+        self._particle_display_color_attr = particle_set.get("display_color_attr")
+        self._particle_display_color_attrs = list(particle_set.get("display_color_attrs", []) or [])
+        self._particle_proto_indices_attr = particle_set.get("proto_indices_attr")
+        self._particle_prototype_color_attrs = list(particle_set.get("prototype_color_attrs", []) or [])
+        self._particle_color_palette = list(particle_set.get("color_palette", []) or [])
+        self._particle_temperature_attr = particle_set.get("temperature_attr")
+        self._particle_positions = list(particle_set.get("positions", []) or [])
+        self._particle_heat_weights = list(particle_set.get("heat_weights", []) or [])
+        self._particle_temperatures = list(particle_set.get("temperatures", []) or [])
+        self._particle_water_radius = particle_set.get("water_radius")
+        self._particle_water_height = particle_set.get("water_height")
+        self._last_particle_update_time = float(particle_set.get("last_update_time", 0.0) or 0.0)
+        self._particle_elapsed = float(particle_set.get("elapsed", 0.0) or 0.0)
 
     def is_inflow_enabled(self):
         return self._inflow_enabled
@@ -1711,6 +2101,35 @@ class WaterTempController:
         )
         self._warned_missing_water = True
 
+    def _find_water_prims(self, stage):
+        configured = str(get_global_config("WATER_PRIM_PATH", "") or "").strip()
+        if configured:
+            prim = stage.GetPrimAtPath(configured)
+            return [prim] if prim and prim.IsValid() else []
+
+        water_prims = []
+        seen = set()
+        for path in _get_topology_paths_by_name("Water"):
+            prim = stage.GetPrimAtPath(path)
+            if not prim or not prim.IsValid():
+                continue
+            path_string = prim.GetPath().pathString
+            if "/Looks/" in path_string or "/Materials/" in path_string:
+                continue
+            seen.add(path_string)
+            water_prims.append(prim)
+
+        for prim in stage.Traverse():
+            if not prim or not prim.IsValid() or prim.GetName() != "Water":
+                continue
+            path_string = prim.GetPath().pathString
+            if path_string in seen or "/Looks/" in path_string or "/Materials/" in path_string:
+                continue
+            seen.add(path_string)
+            water_prims.append(prim)
+
+        return sorted(water_prims, key=lambda prim: prim.GetPath().pathString)
+
     def _find_water_prim(self, stage):
         configured = str(get_global_config("WATER_PRIM_PATH", "") or "").strip()
         if configured:
@@ -1742,13 +2161,15 @@ class WaterTempController:
         return None
 
     def _temperature_particle_path(self, water_prim):
-        configured = str(get_global_config("TEMP_PARTICLE_PRIM_PATH", "") or "").strip()
-        if configured:
-            return Sdf.Path(configured)
         parent = water_prim.GetPath().GetParentPath()
-        if parent == Sdf.Path.absoluteRootPath:
-            return Sdf.Path("/TemperatureParticlesInsideWater")
-        return parent.AppendChild("TemperatureParticlesInsideWater")
+        configured = str(get_global_config("TEMP_PARTICLE_PRIM_PATH", "") or "").strip()
+        child_name = str(get_global_config("TEMP_PARTICLE_PRIM_NAME", "") or "").strip()
+        if configured:
+            configured_name = configured.rstrip("/").split("/")[-1]
+            if configured_name:
+                child_name = child_name or configured_name
+        child_name = child_name or "TemperatureParticlesInsideWater"
+        return parent.AppendChild(child_name)
 
     def _read_water_particle_bounds(self, water_prim):
         bbox_cache = UsdGeom.BBoxCache(
@@ -1809,9 +2230,30 @@ class WaterTempController:
                 weight = _smoothstep(0.72, 1.0, radial_norm)
             heat_weights.append(max(0.0, min(1.0, weight)))
 
-        width = float(get_global_config("TEMP_PARTICLE_WIDTH", max(0.01, radius * 0.025)))
+        configured_radius = float(get_global_config("TEMP_PARTICLE_RADIUS", 0.0) or 0.0)
+        configured_width = float(get_global_config("TEMP_PARTICLE_WIDTH", 0.0) or 0.0)
+        if configured_radius > 0.0:
+            width = configured_radius
+        elif configured_width > 0.0:
+            width = configured_width
+        else:
+            width_ratio = float(get_global_config("TEMP_PARTICLE_WIDTH_RATIO", 0.03))
+            min_width = float(get_global_config("TEMP_PARTICLE_MIN_WIDTH", 0.01))
+            width = max(min_width, radius * width_ratio)
 
         particle_path = self._temperature_particle_path(water_prim)
+        particle_parent_prim = stage.GetPrimAtPath(particle_path.GetParentPath())
+        parent_world = Gf.Matrix4d(1.0)
+        if particle_parent_prim and particle_parent_prim.IsValid():
+            try:
+                parent_world = UsdGeom.Xformable(particle_parent_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            except Exception:
+                parent_world = Gf.Matrix4d(1.0)
+        parent_world_inv = parent_world.GetInverse()
+        local_positions = []
+        for position in positions:
+            local_position = parent_world_inv.Transform(Gf.Vec3d(position))
+            local_positions.append(Gf.Vec3f(float(local_position[0]), float(local_position[1]), float(local_position[2])))
         session_layer = stage.GetSessionLayer()
         edit_target = session_layer if session_layer is not None else stage.GetRootLayer()
         cyan = Gf.Vec3f(*thermal_dynamics.temperature_to_rgb(
@@ -1820,67 +2262,114 @@ class WaterTempController:
         ))
         color_bins = max(2, min(256, int(get_global_config("TEMP_PARTICLE_COLOR_BINS", 64))))
         color_palette = _sample_color_stops(get_global_config("TEMP_COLOR_STOPS", []), color_bins)
-        initial_colors = [cyan] * len(positions)
+        authoring_mode = str(get_global_config("TEMP_PARTICLE_AUTHORING_MODE", "point_instancer") or "point_instancer").strip().lower()
+        use_sphere_prims = authoring_mode in {"sphere", "spheres", "sphere_prims", "prim", "prims", "debug_prims"}
+        debug_color = Gf.Vec3f(*tuple(get_global_config("TEMP_PARTICLE_DEBUG_COLOR", (1.0, 0.05, 0.0))))
+        initial_color = debug_color if use_sphere_prims else cyan
+        initial_colors = [initial_color] * len(positions)
         initial_proto_indices = _colors_to_proto_indices(initial_colors, color_palette)
         prototype_color_attrs = []
+        sphere_color_attrs = []
+        proto_indices_attr = None
+        temperature_primvar = None
+        color_primvar = None
         with Usd.EditContext(stage, edit_target):
             if stage.GetPrimAtPath(particle_path).IsValid():
                 stage.RemovePrim(particle_path)
-            instancer = UsdGeom.PointInstancer.Define(stage, particle_path)
-            instancer.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
-            instancer.CreatePurposeAttr(UsdGeom.Tokens.default_)
 
-            prototypes_path = particle_path.AppendChild("Prototypes")
-            UsdGeom.Xform.Define(stage, prototypes_path)
-            prototype_targets = []
-            for index, color in enumerate(color_palette):
-                prototype_path = prototypes_path.AppendChild(f"Color_{index:03d}")
-                prototype = UsdGeom.Sphere.Define(stage, prototype_path)
-                prototype.CreateRadiusAttr(width)
-                prototype.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
-                prototype.CreatePurposeAttr(UsdGeom.Tokens.default_)
-                prototype_color_attrs.append(prototype.CreateDisplayColorAttr(Vt.Vec3fArray([color])))
-                prototype.CreateDisplayOpacityAttr(Vt.FloatArray([1.0]))
-                prototype_targets.append(prototype_path)
+            if use_sphere_prims:
+                particles_xform = UsdGeom.Xform.Define(stage, particle_path)
+                particles_xform.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
+                particles_xform.CreatePurposeAttr(UsdGeom.Tokens.default_)
+                material_path = particle_path.AppendChild("ParticleDebugMaterial")
+                material = UsdShade.Material.Define(stage, material_path)
+                shader = UsdShade.Shader.Define(stage, material_path.AppendChild("Shader"))
+                shader.CreateIdAttr("UsdPreviewSurface")
+                shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(debug_color)
+                shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(debug_color)
+                shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.35)
+                shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(1.0)
+                material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+                for index, (position, color) in enumerate(zip(local_positions, initial_colors), start=1):
+                    sphere_path = particle_path.AppendChild(f"Particle_{index:03d}")
+                    sphere = UsdGeom.Sphere.Define(stage, sphere_path)
+                    sphere.CreateRadiusAttr(width)
+                    sphere.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
+                    sphere.CreatePurposeAttr(UsdGeom.Tokens.default_)
+                    sphere_color_attrs.append(sphere.CreateDisplayColorAttr(Vt.Vec3fArray([color])))
+                    sphere.CreateDisplayOpacityAttr(Vt.FloatArray([1.0]))
+                    UsdShade.MaterialBindingAPI(sphere.GetPrim()).Bind(material)
+                    sphere_xform = UsdGeom.Xformable(sphere.GetPrim())
+                    sphere_xform.ClearXformOpOrder()
+                    sphere_xform.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
+                        Gf.Vec3d(float(position[0]), float(position[1]), float(position[2]))
+                    )
+            else:
+                instancer = UsdGeom.PointInstancer.Define(stage, particle_path)
+                instancer.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
+                instancer.CreatePurposeAttr(UsdGeom.Tokens.default_)
 
-            instancer.CreatePrototypesRel().SetTargets(prototype_targets)
-            proto_indices_attr = instancer.CreateProtoIndicesAttr(initial_proto_indices)
-            instancer.CreatePositionsAttr(Vt.Vec3fArray(positions))
-            min_corner = [
-                min(float(pos[axis]) for pos in positions) - width
-                for axis in range(3)
-            ]
-            max_corner = [
-                max(float(pos[axis]) for pos in positions) + width
-                for axis in range(3)
-            ]
-            instancer.CreateExtentAttr(Vt.Vec3fArray([
-                Gf.Vec3f(min_corner[0], min_corner[1], min_corner[2]),
-                Gf.Vec3f(max_corner[0], max_corner[1], max_corner[2]),
-            ]))
+                prototypes_path = particle_path.AppendChild("Prototypes")
+                UsdGeom.Xform.Define(stage, prototypes_path)
+                prototype_targets = []
+                for index, color in enumerate(color_palette):
+                    prototype_path = prototypes_path.AppendChild(f"Color_{index:03d}")
+                    prototype = UsdGeom.Sphere.Define(stage, prototype_path)
+                    prototype.CreateRadiusAttr(width)
+                    prototype.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
+                    prototype.CreatePurposeAttr(UsdGeom.Tokens.default_)
+                    prototype_color_attrs.append(prototype.CreateDisplayColorAttr(Vt.Vec3fArray([color])))
+                    prototype.CreateDisplayOpacityAttr(Vt.FloatArray([1.0]))
+                    material_path = prototypes_path.AppendChild(f"Material_{index:03d}")
+                    material = UsdShade.Material.Define(stage, material_path)
+                    shader = UsdShade.Shader.Define(stage, material_path.AppendChild("Shader"))
+                    shader.CreateIdAttr("UsdPreviewSurface")
+                    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(color)
+                    shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(color)
+                    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.35)
+                    shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(1.0)
+                    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+                    UsdShade.MaterialBindingAPI(prototype.GetPrim()).Bind(material)
+                    prototype_targets.append(prototype_path)
 
-            primvars_api = UsdGeom.PrimvarsAPI(instancer.GetPrim())
-            color_primvar = primvars_api.CreatePrimvar(
-                "displayColor",
-                Sdf.ValueTypeNames.Color3fArray,
-                UsdGeom.Tokens.vertex,
-            )
-            color_primvar.Set(Vt.Vec3fArray(initial_colors))
-            temperature_primvar = primvars_api.CreatePrimvar(
-                "temperature",
-                Sdf.ValueTypeNames.FloatArray,
-                UsdGeom.Tokens.vertex,
-            )
-            temperature_primvar.Set(Vt.FloatArray([float(self._T)] * len(positions)))
+                instancer.CreatePrototypesRel().SetTargets(prototype_targets)
+                proto_indices_attr = instancer.CreateProtoIndicesAttr(initial_proto_indices)
+                instancer.CreatePositionsAttr(Vt.Vec3fArray(local_positions))
+                min_corner = [
+                    min(float(pos[axis]) for pos in local_positions) - width
+                    for axis in range(3)
+                ]
+                max_corner = [
+                    max(float(pos[axis]) for pos in local_positions) + width
+                    for axis in range(3)
+                ]
+                instancer.CreateExtentAttr(Vt.Vec3fArray([
+                    Gf.Vec3f(min_corner[0], min_corner[1], min_corner[2]),
+                    Gf.Vec3f(max_corner[0], max_corner[1], max_corner[2]),
+                ]))
+
+                primvars_api = UsdGeom.PrimvarsAPI(instancer.GetPrim())
+                color_primvar = primvars_api.CreatePrimvar(
+                    "displayColor",
+                    Sdf.ValueTypeNames.Color3fArray,
+                    UsdGeom.Tokens.vertex,
+                )
+                color_primvar.Set(Vt.Vec3fArray(initial_colors))
+                temperature_primvar = primvars_api.CreatePrimvar(
+                    "temperature",
+                    Sdf.ValueTypeNames.FloatArray,
+                    UsdGeom.Tokens.vertex,
+                )
+                temperature_primvar.Set(Vt.FloatArray([float(self._T)] * len(positions)))
 
         self._particles_prim = stage.GetPrimAtPath(particle_path)
-        self._particle_color_attr = color_primvar.GetAttr()
+        self._particle_color_attr = color_primvar.GetAttr() if color_primvar is not None else None
         self._particle_display_color_attr = self._particle_color_attr
-        self._particle_display_color_attrs = []
+        self._particle_display_color_attrs = sphere_color_attrs
         self._particle_proto_indices_attr = proto_indices_attr
         self._particle_prototype_color_attrs = prototype_color_attrs
         self._particle_color_palette = color_palette
-        self._particle_temperature_attr = temperature_primvar.GetAttr()
+        self._particle_temperature_attr = temperature_primvar.GetAttr() if temperature_primvar is not None else None
         self._particle_positions = positions
         self._particle_heat_weights = heat_weights
         self._particle_water_radius = float(radius)
@@ -1889,8 +2378,8 @@ class WaterTempController:
         self._particle_elapsed = 0.0
         self._write_particle_samples(stage, force=True)
         carb.log_info(
-            f"[Aquacast Temp] Authored {count} temperature point instances at {particle_path} "
-            f"inside water={water_prim.GetPath()}"
+            f"[Aquacast Temp] Authored {count} temperature particles "
+            f"mode={authoring_mode} at {particle_path} as sibling of water={water_prim.GetPath()}"
         )
 
     def _write_particle_proto_colors(self, colors, palette=None):
@@ -1908,7 +2397,33 @@ class WaterTempController:
             proto_indices_attr.Set(_colors_to_proto_indices(colors, color_palette))
 
     def _write_particle_samples(self, stage, force=False):
-        if self._particle_color_attr is None or not self._particle_heat_weights:
+        particle_sets = getattr(self, "_particle_sets", []) or []
+        if particle_sets and not getattr(self, "_writing_particle_set", False):
+            aggregate_positions = []
+            aggregate_weights = []
+            aggregate_temperatures = []
+            for particle_set in particle_sets:
+                self._restore_particle_set(particle_set)
+                self._writing_particle_set = True
+                try:
+                    self._write_particle_samples(stage, force=force)
+                finally:
+                    self._writing_particle_set = False
+                particle_set.update(self._capture_particle_set(particle_set.get("water_prim")))
+                aggregate_positions.extend(particle_set.get("positions", []) or [])
+                aggregate_weights.extend(particle_set.get("heat_weights", []) or [])
+                aggregate_temperatures.extend(particle_set.get("temperatures", []) or [])
+            if particle_sets:
+                self._restore_particle_set(particle_sets[0])
+                self._particle_sets = particle_sets
+                self._particle_positions = aggregate_positions
+                self._particle_heat_weights = aggregate_weights
+                self._particle_temperatures = aggregate_temperatures
+            return
+
+        if self._particle_color_attr is None and not (getattr(self, "_particle_display_color_attrs", []) or []):
+            return
+        if not self._particle_heat_weights:
             return
 
         now = time.monotonic()
@@ -2112,6 +2627,7 @@ class WaterTempController:
             self._display_color_attr = None
             self._water_prim = None
             self._particles_prim = None
+            self._particle_sets = []
             self._particle_color_attr = None
             self._particle_display_color_attr = None
             self._particle_display_color_attrs = []
@@ -2141,6 +2657,7 @@ class WaterTempController:
             self._display_color_attr = None
             self._water_prim = None
             self._particles_prim = None
+            self._particle_sets = []
             self._particle_color_attr = None
             self._particle_display_color_attr = None
             self._particle_display_color_attrs = []
@@ -2452,21 +2969,63 @@ class WaterQualityController:
 
     def _write_particle_primvars(self, stage, now):
         update_interval = float(get_global_config("WQ_PARTICLE_UPDATE_INTERVAL_SECONDS", 1.0))
-        if update_interval > 0.0 and now - self._last_particle_write_time < update_interval:
+        if (
+            update_interval > 0.0
+            and now - self._last_particle_write_time < update_interval
+            and not getattr(self, "_writing_particle_set", False)
+        ):
             return
         field_interval = float(get_global_config("WQ_PARTICLE_FIELD_UPDATE_INTERVAL_SECONDS", 0.5))
-        write_all_fields = now - self._last_particle_field_write_time >= max(0.0, field_interval)
+        write_all_fields = (
+            getattr(self, "_writing_particle_set", False)
+            or now - self._last_particle_field_write_time >= max(0.0, field_interval)
+        )
 
         temp_controller = globals().get("_water_temp_controller")
         if temp_controller is None:
             return
+
+        particle_sets = getattr(temp_controller, "_particle_sets", []) or []
+        if particle_sets and not getattr(self, "_writing_particle_set", False):
+            restore_particle_set = getattr(temp_controller, "_restore_particle_set", None)
+            capture_particle_set = getattr(temp_controller, "_capture_particle_set", None)
+            aggregate_positions = []
+            aggregate_weights = []
+            aggregate_temperatures = []
+            for particle_set in particle_sets:
+                if callable(restore_particle_set):
+                    restore_particle_set(particle_set)
+                self._writing_particle_set = True
+                self._particle_primvars = {}
+                self._display_color_attr = None
+                self._sphere_color_attrs = []
+                try:
+                    self._write_particle_primvars(stage, now)
+                finally:
+                    self._writing_particle_set = False
+                if callable(capture_particle_set):
+                    particle_set.update(capture_particle_set(particle_set.get("water_prim")))
+                aggregate_positions.extend(particle_set.get("positions", []) or [])
+                aggregate_weights.extend(particle_set.get("heat_weights", []) or [])
+                aggregate_temperatures.extend(particle_set.get("temperatures", []) or [])
+            if particle_sets and callable(restore_particle_set):
+                restore_particle_set(particle_sets[0])
+            temp_controller._particle_sets = particle_sets
+            temp_controller._particle_positions = aggregate_positions
+            temp_controller._particle_heat_weights = aggregate_weights
+            temp_controller._particle_temperatures = aggregate_temperatures
+            self._last_particle_write_time = now
+            if write_all_fields:
+                self._last_particle_field_write_time = now
+            return
+
         heat_weights = getattr(temp_controller, "_particle_heat_weights", None) or []
         positions = getattr(temp_controller, "_particle_positions", None) or []
         if not heat_weights:
             return
 
-        particle_path = str(get_global_config("TEMP_PARTICLE_PRIM_PATH", "") or "")
-        prim = stage.GetPrimAtPath(particle_path) if particle_path else None
+        particles_prim = getattr(temp_controller, "_particles_prim", None)
+        prim = particles_prim if particles_prim and particles_prim.IsValid() else None
         if not prim or not prim.IsValid():
             return
 
@@ -2476,7 +3035,7 @@ class WaterQualityController:
         if not self._particle_primvars and not self._sphere_color_attrs and self._display_color_attr is None:
             return
 
-        if hasattr(self._model, "registered_particle_values"):
+        if not getattr(self, "_writing_particle_set", False) and hasattr(self._model, "registered_particle_values"):
             values = self._model.registered_particle_values()
         else:
             values = self._model.particle_values(heat_weights, positions)

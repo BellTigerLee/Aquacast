@@ -1,25 +1,30 @@
-EXPORT_STAGE_TOPOLOGY_JSON = True
+EXPORT_STAGE_TOPOLOGY_JSON = False
+ENABLE_STAGE_STRUCTURE_CACHE = False
+STAGE_TOPOLOGY_INCLUDE_TRANSFORMS = False
+STAGE_TOPOLOGY_INCLUDE_BOUNDS = False
+STAGE_TOPOLOGY_TRANSFORM_PRECISION = 6
 STAGE_TOPOLOGY_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/stage_topology.json"
 
 ENABLE_AUTO_OPEN_STAGE = True
-AUTO_OPEN_STAGE_PATH = "/home/netai-sys/cs-project/assets/Fishtank_test.usd"
+AUTO_OPEN_STAGE_PATH = "/home/netai-sys/cs-project/assets/scene.usd"
 
 ENABLE_FISH_SWIMMING = True
 FISH_NAME_PREFIX = "Fish_"
-WATER_PRIM_PATH = "/Root/Group/Water"
-FISH_USE_STAGE_TOPOLOGY_JSON = True
+WATER_PRIM_PATH = ""
+FISH_WATER_UP_AXIS = "Y"
+FISH_USE_STAGE_TOPOLOGY_JSON = False
 FISH_INIT_RETRY_SECONDS = 0.7 #1.0
 
 # Runtime fish authoring. Environment variables with the AQUACAST_ prefix
 # take precedence, e.g. AQUACAST_DYNAMIC_FISH_COUNT=40.
-DYNAMIC_FISH_COUNT_PER_TANK =5
+DYNAMIC_FISH_COUNT_PER_TANK =1
 DYNAMIC_FISH_SCALE = 1.0
 DYNAMIC_FISH_SALMON_1_SCALE = 0.5
 DYNAMIC_FISH_SALMON_2_SCALE = 1
 DYNAMIC_FISH_SALMON_1_RATIO = 0.5
 DYNAMIC_FISH_SALMON_1_PATH = "~/cs-project/assets/salmon_1.usd"
 DYNAMIC_FISH_SALMON_2_PATH = "~/cs-project/assets/salmon_2.usd"
-FISH_RNG_SEED = 42
+FISH_RNG_SEED = "random"
 
 # Fish movement is scaled by the detected Water cylinder radius.
 FISH_SWIM_SPEED_RADIUS_PER_SECOND = 0.12 #0.12
@@ -64,8 +69,8 @@ ENABLE_WATER_TEMP_VIS = True
 # TemperatureParticlesInsideWater is used for physical heat visualization.
 ENABLE_PARTICLE_SYSTEM_TEMP_COLOR = False
 
-ISOSURFACE_PRIM_PATH = "/Root/Group/ParticleSystem/Isosurface"
-TEMP_VIS_USE_STAGE_TOPOLOGY_JSON = True
+ISOSURFACE_PRIM_PATH = ""
+TEMP_VIS_USE_STAGE_TOPOLOGY_JSON = False
 TEMP_VIS_INIT_RETRY_SECONDS = 0.2
 
 INITIAL_WATER_TEMP_C = 14.0
@@ -87,15 +92,24 @@ TEMP_COLOR_STOPS = [
 TEMP_VIS_LOG_INTERVAL_SECONDS = 5.0
 
 # Runtime water temperature particles authored into the session layer at startup.
+# The particle prim is authored under the resolved Water prim parent, as a sibling of Water.
 ENABLE_WATER_TEMP_PARTICLES = True
-TEMP_PARTICLE_PRIM_PATH = "/Root/Group/TemperatureParticlesInsideWater"
-# Increase or decrease this to control how many runtime point particles are authored.
+TEMP_PARTICLE_PRIM_PATH = "TemperatureParticlesInsideWater"
+# Use point_instancer for normal runtime particles; sphere_prims remains available for visibility debugging.
+TEMP_PARTICLE_AUTHORING_MODE = "point_instancer"
+# Increase or decrease this to control how many runtime particles are authored.
 TEMP_PARTICLE_COUNT = 1000
 TEMP_PARTICLE_RANDOM_SEED = 42
 TEMP_PARTICLE_RADIUS_RATIO = 0.94
 TEMP_PARTICLE_HEIGHT_RATIO = 0.94
 TEMP_PARTICLE_UP_AXIS = "Y"
-TEMP_PARTICLE_WIDTH = 1.2
+# Visual radius of each temperature particle. Set to 0.0 to auto-size from the Water radius.
+TEMP_PARTICLE_RADIUS = 50
+# Backward-compatible alias. TEMP_PARTICLE_RADIUS takes precedence when set above 0.0.
+TEMP_PARTICLE_WIDTH = 0.0
+TEMP_PARTICLE_WIDTH_RATIO = 0.03
+TEMP_PARTICLE_MIN_WIDTH = 25.0
+TEMP_PARTICLE_DEBUG_COLOR = (1.0, 0.05, 0.0)
 TEMP_PARTICLE_COLOR_BINS = 64
 TEMP_PARTICLE_HEATING_MODE = "side"
 TEMP_PARTICLE_HEAT_DELTA_C = 2.0
@@ -104,7 +118,7 @@ TEMP_PARTICLE_UPDATE_INTERVAL_SECONDS = 0.12
 
 # Test UI that samples particle temperatures near the inlet reference sensor prim.
 ENABLE_WATER_TEMP_SENSOR_UI = True
-TEMP_SENSOR_PRIM_PATH = "/Root/Group/Aquarium/AquariumComponents/FishTank/InWater/Components/inlet_reference"
+TEMP_SENSOR_PRIM_PATH = ""
 TEMP_SENSOR_PRIM_NAME = "inlet_reference"
 TEMP_SENSOR_SAMPLE_RADIUS = 8.0
 TEMP_SENSOR_FALLBACK_NEAREST_COUNT = 16

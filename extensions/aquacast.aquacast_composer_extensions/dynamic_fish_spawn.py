@@ -43,6 +43,24 @@ def resolve_mix_ratio(env_value: str | None, default: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+def is_random_seed(value) -> bool:
+    return value is not None and str(value).strip().lower() == "random"
+
+
+def resolve_seed(env_value: str | None, default: int | str, random_seed_factory=None) -> int:
+    factory = random_seed_factory or (lambda: random.SystemRandom().randrange(0, 2**63))
+
+    value = default if env_value is None else env_value
+    if is_random_seed(value):
+        return int(factory())
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        if is_random_seed(default):
+            return int(factory())
+        return int(float(str(default).strip()))
+
+
 def resolve_asset_path(env_value: str | None, default: str) -> str:
     value = str(env_value if env_value is not None else default).strip()
     return str(Path(value).expanduser().resolve())

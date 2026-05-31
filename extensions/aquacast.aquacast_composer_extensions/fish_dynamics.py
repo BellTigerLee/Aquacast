@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 import random
 
+import numpy as np
+
 
 _TWO_PI = 2.0 * math.pi
 
@@ -44,6 +46,41 @@ def depth_attraction_strength(
     if band_half <= 1e-6:
         return 0.0
     return max(-1.0, min(1.0, (preferred_z - position_z) / band_half))
+
+
+def compute_flock_vectors(
+    positions: np.ndarray,
+    directions: np.ndarray,
+    separation_radius: float,
+    *,
+    eps: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute all-fish boids neighbor accumulators with numpy broadcasting."""
+    positions = np.asarray(positions, dtype=np.float64)
+    directions = np.asarray(directions, dtype=np.float64)
+    count = int(positions.shape[0]) if positions.ndim >= 1 else 0
+    empty_vecs = np.zeros((count, 3), dtype=np.float64)
+    empty_counts = np.zeros((count,), dtype=np.int64)
+    if count == 0:
+        return empty_vecs, empty_vecs.copy(), empty_vecs.copy(), empty_counts
+    if positions.shape != (count, 3) or directions.shape != (count, 3):
+        raise ValueError("positions and directions must both have shape (N, 3)")
+    radius = float(separation_radius)
+    if count < 2 or radius <= 0.0:
+        return empty_vecs, empty_vecs.copy(), empty_vecs.copy(), empty_counts
+
+    diff = positions[:, None, :] - positions[None, :, :]
+    dist = np.sqrt(np.sum(diff * diff, axis=-1))
+    mask = (dist > float(eps)) & (dist <= radius)
+    neighbor_counts = np.sum(mask, axis=1).astype(np.int64)
+
+    safe_dist = np.where(mask, dist, 1.0)
+    unit_offset = diff / safe_dist[..., None]
+    weights = (1.0 - dist / radius) * mask
+    separation = np.sum(unit_offset * weights[..., None], axis=1)
+    alignment = np.sum(directions[None, :, :] * mask[..., None], axis=1)
+    cohesion_center = np.sum(positions[None, :, :] * mask[..., None], axis=1)
+    return separation, alignment, cohesion_center, neighbor_counts
 
 
 def compute_target_roll(
