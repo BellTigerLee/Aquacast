@@ -104,6 +104,18 @@ def get_global_config(name, default=None):
     return getattr(module, name, default)
 
 
+def _wq_particle_colors_enabled():
+    return bool(get_global_config("WQ_WRITE_PARTICLE_COLORS", get_global_config("WQ_WRITE_PARTICLE_PRIMVARS", True)))
+
+
+def _wq_particle_fields_enabled():
+    return bool(get_global_config("WQ_WRITE_PARTICLE_PRIMVARS", True))
+
+
+def _wq_particle_updates_enabled():
+    return _wq_particle_colors_enabled() or _wq_particle_fields_enabled()
+
+
 def _env_value(name):
     return os.environ.get(f"AQUACAST_{name}")
 
@@ -2842,12 +2854,14 @@ class WaterTempController:
         ))
         color_bins = max(2, min(256, int(get_global_config("TEMP_PARTICLE_COLOR_BINS", 64))))
         color_palette = _sample_color_stops(get_global_config("TEMP_COLOR_STOPS", []), color_bins)
-        authoring_mode = str(get_global_config("TEMP_PARTICLE_AUTHORING_MODE", "point_instancer") or "point_instancer").strip().lower()
-        use_sphere_prims = authoring_mode in {"sphere", "spheres", "sphere_prims", "prim", "prims", "debug_prims"}
-        debug_color = Gf.Vec3f(*tuple(get_global_config("TEMP_PARTICLE_DEBUG_COLOR", (1.0, 0.05, 0.0))))
-        initial_color = debug_color if use_sphere_prims else cyan
+        authoring_mode = str(get_global_config("TEMP_PARTICLE_AUTHORING_MODE", "points") or "points").strip().lower()
+        if authoring_mode not in {"points", "point", "usd_points"}:
+            carb.log_warn(
+                f"[Aquacast Temp] TEMP_PARTICLE_AUTHORING_MODE={authoring_mode!r} ignored; "
+                "runtime particles use UsdGeom.Points to avoid sphere geometry and per-sphere USD writes"
+            )
+        initial_color = cyan
         initial_colors = [initial_color] * len(positions)
-        initial_proto_indices = _colors_to_proto_indices(initial_colors, color_palette)
         prototype_color_attrs = []
         sphere_color_attrs = []
         proto_indices_attr = None
@@ -2857,90 +2871,37 @@ class WaterTempController:
             if stage.GetPrimAtPath(particle_path).IsValid():
                 stage.RemovePrim(particle_path)
 
-            if use_sphere_prims:
-                particles_xform = UsdGeom.Xform.Define(stage, particle_path)
-                particles_xform.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
-                particles_xform.CreatePurposeAttr(UsdGeom.Tokens.default_)
-                material_path = particle_path.AppendChild("ParticleDebugMaterial")
-                material = UsdShade.Material.Define(stage, material_path)
-                shader = UsdShade.Shader.Define(stage, material_path.AppendChild("Shader"))
-                shader.CreateIdAttr("UsdPreviewSurface")
-                shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(debug_color)
-                shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(debug_color)
-                shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.35)
-                shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(1.0)
-                material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
-                for index, (position, color) in enumerate(zip(local_positions, initial_colors), start=1):
-                    sphere_path = particle_path.AppendChild(f"Particle_{index:03d}")
-                    sphere = UsdGeom.Sphere.Define(stage, sphere_path)
-                    sphere.CreateRadiusAttr(width)
-                    sphere.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
-                    sphere.CreatePurposeAttr(UsdGeom.Tokens.default_)
-                    sphere_color_attrs.append(sphere.CreateDisplayColorAttr(Vt.Vec3fArray([color])))
-                    sphere.CreateDisplayOpacityAttr(Vt.FloatArray([1.0]))
-                    UsdShade.MaterialBindingAPI(sphere.GetPrim()).Bind(material)
-                    sphere_xform = UsdGeom.Xformable(sphere.GetPrim())
-                    sphere_xform.ClearXformOpOrder()
-                    sphere_xform.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
-                        Gf.Vec3d(float(position[0]), float(position[1]), float(position[2]))
-                    )
-            else:
-                instancer = UsdGeom.PointInstancer.Define(stage, particle_path)
-                instancer.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
-                instancer.CreatePurposeAttr(UsdGeom.Tokens.default_)
+            points = UsdGeom.Points.Define(stage, particle_path)
+            points.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
+            points.CreatePurposeAttr(UsdGeom.Tokens.default_)
+            points.CreatePointsAttr(Vt.Vec3fArray(local_positions))
+            points.CreateWidthsAttr(Vt.FloatArray([float(width)] * len(local_positions)))
+            min_corner = [
+                min(float(pos[axis]) for pos in local_positions) - width
+                for axis in range(3)
+            ]
+            max_corner = [
+                max(float(pos[axis]) for pos in local_positions) + width
+                for axis in range(3)
+            ]
+            points.CreateExtentAttr(Vt.Vec3fArray([
+                Gf.Vec3f(min_corner[0], min_corner[1], min_corner[2]),
+                Gf.Vec3f(max_corner[0], max_corner[1], max_corner[2]),
+            ]))
 
-                prototypes_path = particle_path.AppendChild("Prototypes")
-                UsdGeom.Xform.Define(stage, prototypes_path)
-                prototype_targets = []
-                for index, color in enumerate(color_palette):
-                    prototype_path = prototypes_path.AppendChild(f"Color_{index:03d}")
-                    prototype = UsdGeom.Sphere.Define(stage, prototype_path)
-                    prototype.CreateRadiusAttr(width)
-                    prototype.CreateVisibilityAttr(UsdGeom.Tokens.inherited)
-                    prototype.CreatePurposeAttr(UsdGeom.Tokens.default_)
-                    prototype_color_attrs.append(prototype.CreateDisplayColorAttr(Vt.Vec3fArray([color])))
-                    prototype.CreateDisplayOpacityAttr(Vt.FloatArray([1.0]))
-                    material_path = prototypes_path.AppendChild(f"Material_{index:03d}")
-                    material = UsdShade.Material.Define(stage, material_path)
-                    shader = UsdShade.Shader.Define(stage, material_path.AppendChild("Shader"))
-                    shader.CreateIdAttr("UsdPreviewSurface")
-                    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(color)
-                    shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(color)
-                    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.35)
-                    shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(1.0)
-                    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
-                    UsdShade.MaterialBindingAPI(prototype.GetPrim()).Bind(material)
-                    prototype_targets.append(prototype_path)
-
-                instancer.CreatePrototypesRel().SetTargets(prototype_targets)
-                proto_indices_attr = instancer.CreateProtoIndicesAttr(initial_proto_indices)
-                instancer.CreatePositionsAttr(Vt.Vec3fArray(local_positions))
-                min_corner = [
-                    min(float(pos[axis]) for pos in local_positions) - width
-                    for axis in range(3)
-                ]
-                max_corner = [
-                    max(float(pos[axis]) for pos in local_positions) + width
-                    for axis in range(3)
-                ]
-                instancer.CreateExtentAttr(Vt.Vec3fArray([
-                    Gf.Vec3f(min_corner[0], min_corner[1], min_corner[2]),
-                    Gf.Vec3f(max_corner[0], max_corner[1], max_corner[2]),
-                ]))
-
-                primvars_api = UsdGeom.PrimvarsAPI(instancer.GetPrim())
-                color_primvar = primvars_api.CreatePrimvar(
-                    "displayColor",
-                    Sdf.ValueTypeNames.Color3fArray,
-                    UsdGeom.Tokens.vertex,
-                )
-                color_primvar.Set(Vt.Vec3fArray(initial_colors))
-                temperature_primvar = primvars_api.CreatePrimvar(
-                    "temperature",
-                    Sdf.ValueTypeNames.FloatArray,
-                    UsdGeom.Tokens.vertex,
-                )
-                temperature_primvar.Set(Vt.FloatArray([float(self._T)] * len(positions)))
+            primvars_api = UsdGeom.PrimvarsAPI(points.GetPrim())
+            color_primvar = primvars_api.CreatePrimvar(
+                "displayColor",
+                Sdf.ValueTypeNames.Color3fArray,
+                UsdGeom.Tokens.vertex,
+            )
+            color_primvar.Set(Vt.Vec3fArray(initial_colors))
+            temperature_primvar = primvars_api.CreatePrimvar(
+                "temperature",
+                Sdf.ValueTypeNames.FloatArray,
+                UsdGeom.Tokens.vertex,
+            )
+            temperature_primvar.Set(Vt.FloatArray([float(self._T)] * len(positions)))
 
         self._particles_prim = stage.GetPrimAtPath(particle_path)
         self._particle_color_attr = color_primvar.GetAttr() if color_primvar is not None else None
@@ -3036,8 +2997,10 @@ class WaterTempController:
         stops = self._sorted_stops(get_global_config("TEMP_COLOR_STOPS", []))
         if not stops:
             return
-        sphere_color_attrs = getattr(self, "_particle_display_color_attrs", []) or []
-        water_quality_drives_color = bool(get_global_config("ENABLE_WATER_QUALITY", get_global_config("ENABLE_WATER_QUALITY_SIM", False)))
+        sphere_color_attrs = []
+        self._particle_display_color_attrs = []
+        water_quality_enabled = bool(get_global_config("ENABLE_WATER_QUALITY", get_global_config("ENABLE_WATER_QUALITY_SIM", False)))
+        water_quality_drives_color = water_quality_enabled and _wq_particle_colors_enabled()
         write_temperature_color = force or not water_quality_drives_color
         heat_delta = float(get_global_config("TEMP_PARTICLE_HEAT_DELTA_C", 42.0))
         spread_rate = float(get_global_config("TEMP_PARTICLE_SPREAD_RATE", 0.05))
@@ -3062,26 +3025,18 @@ class WaterTempController:
             if session_layer is not None:
                 with Usd.EditContext(stage, session_layer):
                     if write_temperature_color:
-                        if sphere_color_attrs:
-                            for attr, color in zip(sphere_color_attrs, colors):
-                                attr.Set(Vt.Vec3fArray([color]))
-                        else:
-                            self._particle_color_attr.Set(Vt.Vec3fArray(colors))
-                            if self._particle_display_color_attr is not None:
-                                self._particle_display_color_attr.Set(Vt.Vec3fArray(colors))
-                            self._write_particle_proto_colors(colors, temp_palette, proto_indices)
-                    if self._particle_temperature_attr is not None:
-                        self._particle_temperature_attr.Set(Vt.FloatArray(temperatures))
-            else:
-                if write_temperature_color:
-                    if sphere_color_attrs:
-                        for attr, color in zip(sphere_color_attrs, colors):
-                            attr.Set(Vt.Vec3fArray([color]))
-                    else:
                         self._particle_color_attr.Set(Vt.Vec3fArray(colors))
                         if self._particle_display_color_attr is not None:
                             self._particle_display_color_attr.Set(Vt.Vec3fArray(colors))
                         self._write_particle_proto_colors(colors, temp_palette, proto_indices)
+                    if self._particle_temperature_attr is not None:
+                        self._particle_temperature_attr.Set(Vt.FloatArray(temperatures))
+            else:
+                if write_temperature_color:
+                    self._particle_color_attr.Set(Vt.Vec3fArray(colors))
+                    if self._particle_display_color_attr is not None:
+                        self._particle_display_color_attr.Set(Vt.Vec3fArray(colors))
+                    self._write_particle_proto_colors(colors, temp_palette, proto_indices)
                 if self._particle_temperature_attr is not None:
                     self._particle_temperature_attr.Set(Vt.FloatArray(temperatures))
         except Exception as exc:
@@ -3199,7 +3154,9 @@ class WaterTempController:
         if bool(get_global_config("ENABLE_PARTICLE_SYSTEM_TEMP_COLOR", False)) and stops and stage is not None:
             r, g, b = thermal_dynamics.temperature_to_rgb(self._T, stops)
             self._write_color(stage, r, g, b)
-        if stage is not None and not bool(get_global_config("ENABLE_WATER_QUALITY", get_global_config("ENABLE_WATER_QUALITY_SIM", False))):
+        water_quality_enabled = bool(get_global_config("ENABLE_WATER_QUALITY", get_global_config("ENABLE_WATER_QUALITY_SIM", False)))
+        water_quality_drives_particles = water_quality_enabled and _wq_particle_colors_enabled()
+        if stage is not None and not water_quality_drives_particles:
             self._write_particle_samples(stage)
 
         self._maybe_log(now, t_room, t_inlet, k_room, k_inflow)
@@ -3402,6 +3359,13 @@ class WaterQualityController:
             self._view_variable_override = value
             self._last_particle_write_time = 0.0
             carb.log_info(f"[Aquacast WQ] View variable={value}")
+            if _wq_particle_colors_enabled() and self._model is not None:
+                try:
+                    stage = omni.usd.get_context().get_stage()
+                    if stage is not None:
+                        self._write_particle_primvars(stage, time.time(), force=True)
+                except Exception as exc:
+                    carb.log_warn(f"[Aquacast WQ] Failed to refresh particle colors for view={value}: {exc}")
 
     def _load_model(self):
         base = Path(__file__).resolve().parent
@@ -3505,7 +3469,7 @@ class WaterQualityController:
                 temp_controller._T = float(getattr(state, "temperature_c", temp_controller._T))
             except Exception:
                 pass
-        if stage is not None and bool(get_global_config("WQ_WRITE_PARTICLE_PRIMVARS", True)):
+        if stage is not None and _wq_particle_updates_enabled():
             self._write_particle_primvars(stage, now)
         self._maybe_log(now, state)
 
@@ -3575,16 +3539,17 @@ class WaterQualityController:
         except Exception:
             return
 
-    def _write_particle_primvars(self, stage, now):
+    def _write_particle_primvars(self, stage, now, force=False):
         update_interval = float(get_global_config("WQ_PARTICLE_UPDATE_INTERVAL_SECONDS", 1.0))
         if (
-            update_interval > 0.0
+            not force
+            and update_interval > 0.0
             and now - self._last_particle_write_time < update_interval
             and not getattr(self, "_writing_particle_set", False)
         ):
             return
         field_interval = float(get_global_config("WQ_PARTICLE_FIELD_UPDATE_INTERVAL_SECONDS", 0.5))
-        write_all_fields = (
+        write_all_fields = _wq_particle_fields_enabled() and (
             getattr(self, "_writing_particle_set", False)
             or now - self._last_particle_field_write_time >= max(0.0, field_interval)
         )
@@ -3667,10 +3632,8 @@ class WaterQualityController:
                                 attr.Set(Vt.FloatArray(field))
                     self._last_particle_field_write_time = now
                 if display_colors:
-                    if self._sphere_color_attrs:
-                        for attr, color in zip(self._sphere_color_attrs, display_colors):
-                            attr.Set(Vt.Vec3fArray([color]))
-                    elif self._display_color_attr is not None:
+                    self._sphere_color_attrs = []
+                    if self._display_color_attr is not None:
                         self._display_color_attr.Set(Vt.Vec3fArray(display_colors))
                         color_bins = len(getattr(temp_controller, "_particle_color_palette", []) or [])
                         if color_bins <= 0:
@@ -3715,26 +3678,28 @@ class WaterQualityController:
             if edit_context is not None:
                 edit_context.__enter__()
             try:
-                sphere_attrs = []
-                for child in prim.GetChildren():
-                    if child and child.IsValid() and child.GetTypeName() == "Sphere":
-                        color_attr = UsdGeom.Sphere(child).CreateDisplayColorAttr()
-                        sphere_attrs.append(color_attr)
-                self._sphere_color_attrs = sphere_attrs
-                if sphere_attrs:
+                self._sphere_color_attrs = []
+                if prim.GetTypeName() not in {"Points", "PointInstancer"}:
+                    carb.log_warn(
+                        f"[Aquacast WQ] Ignoring legacy particle prim {prim.GetPath()} type={prim.GetTypeName()}; "
+                        "UsdGeom.Points particles are required to avoid sphere geometry and per-sphere USD writes"
+                    )
                     self._particle_primvars = {}
                     self._display_color_attr = None
                     return
 
                 primvars_api = UsdGeom.PrimvarsAPI(prim)
-                self._particle_primvars = {
-                    key: primvars_api.CreatePrimvar(
-                        name,
-                        Sdf.ValueTypeNames.FloatArray,
-                        UsdGeom.Tokens.vertex,
-                    ).GetAttr()
-                    for key, name in self._PARTICLE_PRIMVAR_NAMES.items()
-                }
+                if _wq_particle_fields_enabled():
+                    self._particle_primvars = {
+                        key: primvars_api.CreatePrimvar(
+                            name,
+                            Sdf.ValueTypeNames.FloatArray,
+                            UsdGeom.Tokens.vertex,
+                        ).GetAttr()
+                        for key, name in self._PARTICLE_PRIMVAR_NAMES.items()
+                    }
+                else:
+                    self._particle_primvars = {}
                 self._display_color_attr = primvars_api.CreatePrimvar(
                     "displayColor",
                     Sdf.ValueTypeNames.Color3fArray,
