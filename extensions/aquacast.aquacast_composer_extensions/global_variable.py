@@ -117,7 +117,7 @@ TEMP_PARTICLE_SPREAD_RATE = 0.05
 TEMP_PARTICLE_UPDATE_INTERVAL_SECONDS = 0.12
 
 # Test UI that samples particle temperatures near the inlet reference sensor prim.
-ENABLE_WATER_TEMP_SENSOR_UI = False
+ENABLE_WATER_TEMP_SENSOR_UI = True
 TEMP_SENSOR_PRIM_PATH = ""
 TEMP_SENSOR_PRIM_NAME = "inlet_reference"
 TEMP_SENSOR_SAMPLE_RADIUS = 8.0
