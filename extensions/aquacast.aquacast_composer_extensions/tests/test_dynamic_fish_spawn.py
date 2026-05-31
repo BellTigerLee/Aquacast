@@ -30,6 +30,21 @@ def test_resolve_mix_ratio_clamps():
     assert spawn.resolve_mix_ratio("bad", 0.5) == 0.5
 
 
+def test_resolve_seed_supports_numeric_default_and_random():
+    assert not spawn.is_random_seed(None)
+    assert not spawn.is_random_seed(42)
+    assert spawn.is_random_seed("random")
+    assert spawn.is_random_seed(" RANDOM ")
+    assert spawn.resolve_seed(None, 42) == 42
+    assert spawn.resolve_seed("99", 42) == 99
+    assert spawn.resolve_seed("12.0", 42) == 12
+    assert spawn.resolve_seed("bad", 42) == 42
+    assert spawn.resolve_seed(None, "random", random_seed_factory=lambda: 11) == 11
+    assert spawn.resolve_seed("bad", "random", random_seed_factory=lambda: 13) == 13
+    assert spawn.resolve_seed("random", 42, random_seed_factory=lambda: 123456) == 123456
+    assert spawn.resolve_seed(" RANDOM ", 42, random_seed_factory=lambda: 7) == 7
+
+
 def test_resolve_asset_path_expands_home():
     resolved = spawn.resolve_asset_path("~/cs-project/assets/salmon_1.usd", "unused")
     assert resolved == str((Path.home() / "cs-project/assets/salmon_1.usd").resolve())
