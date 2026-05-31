@@ -17,7 +17,7 @@ FISH_INIT_RETRY_SECONDS = 0.7 #1.0
 
 # Runtime fish authoring. Environment variables with the AQUACAST_ prefix
 # take precedence, e.g. AQUACAST_DYNAMIC_FISH_COUNT=40.
-DYNAMIC_FISH_COUNT_PER_TANK =1
+DYNAMIC_FISH_COUNT_PER_TANK = 0
 DYNAMIC_FISH_SCALE = 1.0
 DYNAMIC_FISH_SALMON_1_SCALE = 0.5
 DYNAMIC_FISH_SALMON_2_SCALE = 1
@@ -25,6 +25,26 @@ DYNAMIC_FISH_SALMON_1_RATIO = 0.5
 DYNAMIC_FISH_SALMON_1_PATH = "~/cs-project/assets/salmon_1.usd"
 DYNAMIC_FISH_SALMON_2_PATH = "~/cs-project/assets/salmon_2.usd"
 FISH_RNG_SEED = "random"
+
+ENABLE_FISH_MANAGEMENT_UI = True
+MAX_FISH_PER_TANK = 30
+FISH_MANAGEMENT_UI_UPDATE_INTERVAL_SECONDS = 0.5
+ENABLE_FISH_POPULATION_CSV = True
+FISH_POPULATION_CSV_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/fish_population.csv"
+FISH_SPECIES = [
+    {
+        "id": "salmon_1",
+        "label": "Atlantic",
+        "asset": DYNAMIC_FISH_SALMON_1_PATH,
+        "scale": DYNAMIC_FISH_SALMON_1_SCALE,
+    },
+    {
+        "id": "salmon_2",
+        "label": "Chinook",
+        "asset": DYNAMIC_FISH_SALMON_2_PATH,
+        "scale": DYNAMIC_FISH_SALMON_2_SCALE,
+    },
+]
 
 # Fish movement is scaled by the detected Water cylinder radius.
 FISH_SWIM_SPEED_RADIUS_PER_SECOND = 0.12 #0.12

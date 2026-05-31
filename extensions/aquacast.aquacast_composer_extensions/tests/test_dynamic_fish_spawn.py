@@ -81,3 +81,19 @@ def test_sample_positions_cover_cylinder_mean_near_center():
     assert abs(mean_x) < 0.04
     assert abs(mean_y) < 0.04
     assert math.isclose(mean_z, 1.0, abs_tol=0.04)
+
+
+def test_clamp_add_count_respects_capacity():
+    assert spawn.clamp_add_count(5, 10, 30) == 5
+    assert spawn.clamp_add_count(8, 27, 30) == 3
+    assert spawn.clamp_add_count(2, 30, 30) == 0
+    assert spawn.clamp_add_count(-4, 10, 30) == 0
+    assert spawn.clamp_add_count(5, -3, 2) == 2
+
+
+def test_clamp_remove_count_respects_available():
+    assert spawn.clamp_remove_count(3, 10) == 3
+    assert spawn.clamp_remove_count(8, 5) == 5
+    assert spawn.clamp_remove_count(2, 0) == 0
+    assert spawn.clamp_remove_count(-1, 5) == 0
+    assert spawn.clamp_remove_count(3, -2) == 0

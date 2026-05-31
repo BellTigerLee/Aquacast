@@ -158,6 +158,22 @@ class CreateSetupExtension(omni.ext.IExt):
         self._wq_view_window = None
         self._wq_view_label = None
         self._wq_view_menu_items = []
+        self._fish_window = None
+        self._fish_update_sub = None
+        self._fish_last_update = 0.0
+        self._fish_menu_items = []
+        self._fish_tanks = []
+        self._fish_species = []
+        self._fish_tank_labels = []
+        self._fish_species_labels = []
+        self._fish_tank_combo = None
+        self._fish_species_combo = None
+        self._fish_qty_field = None
+        self._fish_count_label = None
+        self._fish_status_label = None
+        self._fish_add_button = None
+        self._fish_delete_button = None
+        self._fish_clear_button = None
         self._aquacast_menu_items = []
         self._start_dev_autoreload()
         test_mode = self._settings.get("/app/testMode")
@@ -287,6 +303,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._register_aquacast_menu()
         self._create_sensor_window()
         self._create_wq_view_window()
+        self._create_fish_window()
 
         startup_time = \
             omni.kit.app.get_app_interface().get_time_since_start_s()
@@ -615,6 +632,258 @@ class CreateSetupExtension(omni.ext.IExt):
         }.get(str(variable or ""), str(variable or "--"))
         self._wq_view_label.text = f"Current: {label}"
 
+
+    def _create_fish_window(self):
+        if not bool(_get_runtime_config("ENABLE_FISH_MANAGEMENT_UI", True)):
+            return
+        if self._aquacast_main is None:
+            return
+        if self._fish_window is not None:
+            return
+
+        self._fish_window = ui.Window("Aquacast Fish Management", width=430, height=260, visible=True)
+        self._fish_tanks = []
+        self._fish_species = []
+        self._fish_tank_labels = []
+        self._fish_species_labels = []
+        self._build_fish_window_contents()
+        self._register_fish_window_menu()
+        self._fish_update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+            self._on_fish_ui_update,
+            name="aquacast_fish_management_ui",
+        )
+        self._on_fish_ui_update(None, force=True)
+
+    def _register_fish_window_menu(self):
+        if self._fish_menu_items:
+            return
+        self._fish_menu_items = [
+            MenuItemDescription(
+                name="Aquacast/Fish Management",
+                onclick_fn=self._show_fish_window,
+            )
+        ]
+        omni.kit.menu.utils.add_menu_items(self._fish_menu_items, name="Window")
+
+    def _show_fish_window(self):
+        if self._fish_window is None:
+            self._create_fish_window()
+            return
+        self._fish_window.visible = True
+        self._on_fish_ui_update(None, force=True)
+
+    def _fish_combo_index(self, combo):
+        if combo is None:
+            return 0
+        try:
+            return int(combo.model.get_item_value_model().as_int)
+        except Exception:
+            pass
+        try:
+            return int(combo.model.get_item_value_model().get_value_as_int())
+        except Exception:
+            return 0
+
+    def _fish_qty(self):
+        if self._fish_qty_field is None:
+            return 0
+        try:
+            return max(0, int(self._fish_qty_field.model.as_int))
+        except Exception:
+            pass
+        try:
+            return max(0, int(self._fish_qty_field.model.get_value_as_int()))
+        except Exception:
+            return 0
+
+    def _selected_fish_tank(self):
+        if not self._fish_tanks:
+            return None
+        index = max(0, min(self._fish_combo_index(self._fish_tank_combo), len(self._fish_tanks) - 1))
+        return self._fish_tanks[index]
+
+    def _selected_fish_species(self):
+        if not self._fish_species:
+            return None
+        index = max(0, min(self._fish_combo_index(self._fish_species_combo), len(self._fish_species) - 1))
+        return self._fish_species[index]
+
+    def _fish_window_data(self):
+        tanks = []
+        species = []
+        if self._aquacast_main is not None:
+            try:
+                tanks = list(self._aquacast_main.list_fish_tanks())
+            except Exception as exc:
+                carb.log_warn(f"[test-Aquacast] Fish UI tank refresh failed: {exc}")
+            try:
+                species = list(self._aquacast_main.get_fish_species())
+            except Exception as exc:
+                carb.log_warn(f"[test-Aquacast] Fish UI species refresh failed: {exc}")
+        return tanks, species
+
+    def _build_fish_window_contents(self):
+        if self._fish_window is None:
+            return
+        tanks, species = self._fish_window_data()
+        self._fish_tanks = tanks
+        self._fish_species = species
+        self._fish_tank_labels = [path.rsplit("/", 1)[-2] if path.endswith("/Water") and "/" in path.rstrip("/") else path for path in tanks]
+        self._fish_species_labels = [str(item.get("label") or item.get("id") or "species") for item in species]
+        if not self._fish_tank_labels:
+            self._fish_tank_labels = ["(no tank)"]
+        if not self._fish_species_labels:
+            self._fish_species_labels = ["(no species)"]
+
+        with self._fish_window.frame:
+            with ui.VStack(spacing=6):
+                ui.Label("Fish Management", height=22)
+                with ui.HStack(height=26, spacing=6):
+                    ui.Label("Tank:", width=70)
+                    self._fish_tank_combo = ui.ComboBox(0, *self._fish_tank_labels)
+                with ui.HStack(height=26, spacing=6):
+                    ui.Label("Species:", width=70)
+                    self._fish_species_combo = ui.ComboBox(0, *self._fish_species_labels)
+                self._fish_count_label = ui.Label("Total 0/30", height=24)
+                with ui.HStack(height=26, spacing=6):
+                    ui.Label("Qty:", width=70)
+                    self._fish_qty_field = ui.IntField()
+                    try:
+                        self._fish_qty_field.model.set_value(1)
+                    except Exception:
+                        pass
+                with ui.HStack(height=30, spacing=6):
+                    self._fish_add_button = ui.Button("ADD", clicked_fn=self._on_fish_add_clicked)
+                    self._fish_delete_button = ui.Button("DELETE", clicked_fn=self._on_fish_delete_clicked)
+                self._fish_clear_button = ui.Button("Clear All", height=30, clicked_fn=self._on_fish_clear_clicked)
+                self._fish_status_label = ui.Label("스테이지/탱크 대기", height=42, word_wrap=True)
+
+    def _set_fish_button_enabled(self, button, enabled):
+        if button is None:
+            return
+        try:
+            button.enabled = bool(enabled)
+        except Exception:
+            pass
+
+    def _set_fish_status(self, text):
+        if self._fish_status_label is not None:
+            self._fish_status_label.text = str(text)
+
+    def _on_fish_ui_update(self, _event, force=False):
+        if self._fish_window is None or self._aquacast_main is None:
+            return
+        now = time.monotonic()
+        interval = float(_get_runtime_config("FISH_MANAGEMENT_UI_UPDATE_INTERVAL_SECONDS", 0.5) or 0.5)
+        if not force and now - self._fish_last_update < max(0.05, interval):
+            return
+        self._fish_last_update = now
+
+        tanks, species = self._fish_window_data()
+        tank_labels = [path.rsplit("/", 1)[-2] if path.endswith("/Water") and "/" in path.rstrip("/") else path for path in tanks]
+        species_labels = [str(item.get("label") or item.get("id") or "species") for item in species]
+        compare_tank_labels = tank_labels or ["(no tank)"]
+        compare_species_labels = species_labels or ["(no species)"]
+        if tanks != self._fish_tanks or compare_tank_labels != self._fish_tank_labels or compare_species_labels != self._fish_species_labels:
+            self._build_fish_window_contents()
+
+        tank_path = self._selected_fish_tank()
+        max_total = int(_get_runtime_config("MAX_FISH_PER_TANK", 30) or 30)
+        if not tank_path:
+            if self._fish_count_label is not None:
+                self._fish_count_label.text = f"Total 0/{max_total}"
+            self._set_fish_button_enabled(self._fish_add_button, False)
+            self._set_fish_button_enabled(self._fish_delete_button, False)
+            self._set_fish_button_enabled(self._fish_clear_button, False)
+            self._set_fish_status("스테이지/탱크 없음")
+            return
+
+        try:
+            counts = self._aquacast_main.count_fish_in_tank(tank_path)
+        except Exception as exc:
+            counts = {"total": 0, "by_species": {}}
+            self._set_fish_status(f"count failed: {exc}")
+        total = int(counts.get("total", 0))
+        by_species = counts.get("by_species", {}) or {}
+        parts = [f"Total {total}/{max_total}"]
+        for item in self._fish_species:
+            species_id = item.get("id")
+            label = item.get("label") or species_id
+            parts.append(f"{label} {int(by_species.get(species_id, 0))}")
+        if self._fish_count_label is not None:
+            self._fish_count_label.text = " · ".join(parts)
+        self._set_fish_button_enabled(self._fish_add_button, total < max_total)
+        self._set_fish_button_enabled(self._fish_delete_button, total > 0)
+        self._set_fish_button_enabled(self._fish_clear_button, total > 0)
+
+    def _on_fish_add_clicked(self):
+        tank = self._selected_fish_tank()
+        species = self._selected_fish_species()
+        qty = self._fish_qty()
+        if not tank or not species:
+            self._set_fish_status("스테이지/탱크 없음")
+            return
+        if qty <= 0:
+            self._set_fish_status("수량을 1 이상 입력")
+            return
+        try:
+            result = self._aquacast_main.add_fish(tank, species.get("id"), qty)
+        except Exception as exc:
+            self._set_fish_status(f"ADD 실패: {exc}")
+            return
+        added = int(result.get("added", 0))
+        suffix = " (clamped at cap)" if result.get("clamped") else ""
+        self._set_fish_status(f"ADD {qty} -> {added} added{suffix}")
+        self._on_fish_ui_update(None, force=True)
+
+    def _on_fish_delete_clicked(self):
+        tank = self._selected_fish_tank()
+        species = self._selected_fish_species()
+        qty = self._fish_qty()
+        if not tank or not species:
+            self._set_fish_status("스테이지/탱크 없음")
+            return
+        if qty <= 0:
+            self._set_fish_status("수량을 1 이상 입력")
+            return
+        try:
+            result = self._aquacast_main.remove_fish(tank, species.get("id"), qty)
+        except Exception as exc:
+            self._set_fish_status(f"DELETE 실패: {exc}")
+            return
+        removed = int(result.get("removed", 0))
+        status = "선택한 종 없음" if removed == 0 else f"DELETE {qty} -> {removed} removed"
+        self._set_fish_status(status)
+        self._on_fish_ui_update(None, force=True)
+
+    def _on_fish_clear_clicked(self):
+        tank = self._selected_fish_tank()
+        if not tank:
+            self._set_fish_status("스테이지/탱크 없음")
+            return
+        try:
+            result = self._aquacast_main.clear_fish(tank)
+        except Exception as exc:
+            self._set_fish_status(f"Clear 실패: {exc}")
+            return
+        self._set_fish_status(f"Clear All -> {int(result.get('removed', 0))} removed")
+        self._on_fish_ui_update(None, force=True)
+
+    def _teardown_fish_window(self):
+        self._fish_update_sub = None
+        self._fish_window = None
+        self._fish_tank_combo = None
+        self._fish_species_combo = None
+        self._fish_qty_field = None
+        self._fish_count_label = None
+        self._fish_status_label = None
+        self._fish_add_button = None
+        self._fish_delete_button = None
+        self._fish_clear_button = None
+        if self._fish_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._fish_menu_items, "Window")
+            self._fish_menu_items = []
+
     def _register_aquacast_menu(self):
         if self._aquacast_menu_items:
             return
@@ -925,6 +1194,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._sensor_update_sub = None
         self._sensor_window = None
         self._wq_view_window = None
+        self._teardown_fish_window()
         if self._sensor_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._sensor_menu_items, "Window")
             self._sensor_menu_items = []

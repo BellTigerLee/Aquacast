@@ -47,6 +47,19 @@ def is_random_seed(value) -> bool:
     return value is not None and str(value).strip().lower() == "random"
 
 
+def clamp_add_count(requested: int, current_total: int, max_total: int) -> int:
+    requested = max(0, int(requested))
+    current_total = max(0, int(current_total))
+    max_total = max(0, int(max_total))
+    return max(0, min(requested, max_total - current_total))
+
+
+def clamp_remove_count(requested: int, available: int) -> int:
+    requested = max(0, int(requested))
+    available = max(0, int(available))
+    return max(0, min(requested, available))
+
+
 def resolve_seed(env_value: str | None, default: int | str, random_seed_factory=None) -> int:
     factory = random_seed_factory or (lambda: random.SystemRandom().randrange(0, 2**63))
 

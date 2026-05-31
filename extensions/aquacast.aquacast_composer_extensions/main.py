@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import importlib
 import importlib.util
 import json
@@ -814,18 +815,15 @@ def _set_single_reference(prim, asset_path):
         refs.AddReference(asset_path)
 
 
-def _spawn_fish_in_tank(
+def _reset_and_spawn_fish_entries(
     stage,
     tank_path: str,
-    count: int,
+    fish_entries: list[dict],
     *,
-    salmon_scales: tuple[float, float],
-    asset_paths: tuple[str, str],
-    mix_ratio: float,
     seed: int,
     water_bounds: tuple[float, float, float] | None = None,
 ) -> list[str]:
-    if count <= 0:
+    if not fish_entries:
         return []
 
     water_prim = _find_water_prim_for_tank(stage, tank_path)
@@ -864,14 +862,15 @@ def _spawn_fish_in_tank(
         fishes_parent.SetActive(True)
 
         prefix = str(get_global_config("FISH_NAME_PREFIX", "Fish_"))
+        count = len(fish_entries)
         indices = dynamic_fish_spawn.next_fish_indices([], count, prefix)
-        asset_choices = dynamic_fish_spawn.assign_assets(count, mix_ratio, seed)
         positions = dynamic_fish_spawn.sample_positions(count, radius, min_up, max_up, seed + 1)
         yaws = dynamic_fish_spawn.sample_yaws(count, seed + 2)
 
-        for index, asset_index, position, yaw in zip(indices, asset_choices, positions, yaws):
-            asset_path = asset_paths[asset_index]
-            fish_scale = salmon_scales[asset_index]
+        for index, entry, position, yaw in zip(indices, fish_entries, positions, yaws):
+            asset_path = str(entry.get("asset", ""))
+            fish_scale = max(0.0, float(entry.get("scale", 1.0)))
+            species_id = str(entry.get("species_id", "unknown"))
             if not os.path.exists(asset_path):
                 carb.log_warn(f"[Aquacast] Dynamic fish asset missing; skipping path={asset_path}")
                 continue
@@ -898,6 +897,7 @@ def _spawn_fish_in_tank(
                 xform.AddScaleOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(
                     Gf.Vec3f(fish_scale, fish_scale, fish_scale)
                 )
+                fish_prim.SetCustomDataByKey("aquacast:species", species_id)
 
                 asset_prim = stage.DefinePrim(asset_prim_path, "Xform")
                 asset_prim.SetActive(True)
@@ -907,6 +907,501 @@ def _spawn_fish_in_tank(
                 carb.log_warn(f"[Aquacast] Dynamic fish spawn failed path={fish_path}: {exc}")
 
     return created
+
+
+def _spawn_fish_in_tank(
+    stage,
+    tank_path: str,
+    count: int,
+    *,
+    salmon_scales: tuple[float, float],
+    asset_paths: tuple[str, str],
+    mix_ratio: float,
+    seed: int,
+    water_bounds: tuple[float, float, float] | None = None,
+) -> list[str]:
+    if count <= 0:
+        return []
+    asset_choices = dynamic_fish_spawn.assign_assets(count, mix_ratio, seed)
+    entries = [
+        {
+            "species_id": "salmon_1" if asset_index == 0 else "salmon_2",
+            "asset": asset_paths[asset_index],
+            "scale": salmon_scales[asset_index],
+        }
+        for asset_index in asset_choices
+    ]
+    return _reset_and_spawn_fish_entries(
+        stage,
+        tank_path,
+        entries,
+        seed=seed,
+        water_bounds=water_bounds,
+    )
+
+
+def _default_fish_species():
+    scale = float(get_global_config("DYNAMIC_FISH_SCALE", 1.0))
+    return [
+        {
+            "id": "salmon_1",
+            "label": "Atlantic",
+            "asset": get_global_config("DYNAMIC_FISH_SALMON_1_PATH", "~/cs-project/assets/salmon_1.usd"),
+            "scale": get_global_config("DYNAMIC_FISH_SALMON_1_SCALE", scale),
+        },
+        {
+            "id": "salmon_2",
+            "label": "Chinook",
+            "asset": get_global_config("DYNAMIC_FISH_SALMON_2_PATH", "~/cs-project/assets/salmon_2.usd"),
+            "scale": get_global_config("DYNAMIC_FISH_SALMON_2_SCALE", scale),
+        },
+    ]
+
+
+def get_fish_species():
+    raw_species = get_global_config("FISH_SPECIES", None)
+    if not isinstance(raw_species, (list, tuple)) or not raw_species:
+        raw_species = _default_fish_species()
+
+    normalized = []
+    seen = set()
+    for index, raw in enumerate(raw_species):
+        if not isinstance(raw, dict):
+            continue
+        species_id = str(raw.get("id") or f"species_{index + 1}").strip()
+        if not species_id or species_id in seen:
+            continue
+        label = str(raw.get("label") or species_id).strip() or species_id
+        asset = str(raw.get("asset") or "").strip()
+        if not asset:
+            continue
+        try:
+            scale = max(0.0, float(raw.get("scale", get_global_config("DYNAMIC_FISH_SCALE", 1.0))))
+        except (TypeError, ValueError):
+            scale = max(0.0, float(get_global_config("DYNAMIC_FISH_SCALE", 1.0)))
+        normalized.append({
+            "id": species_id,
+            "label": label,
+            "asset": dynamic_fish_spawn.resolve_asset_path(None, asset),
+            "scale": scale,
+        })
+        seen.add(species_id)
+
+    if normalized:
+        return normalized
+    return [
+        {
+            "id": item["id"],
+            "label": item["label"],
+            "asset": dynamic_fish_spawn.resolve_asset_path(None, str(item["asset"])),
+            "scale": max(0.0, float(item["scale"])),
+        }
+        for item in _default_fish_species()
+    ]
+
+
+def _species_by_id():
+    return {item["id"]: item for item in get_fish_species()}
+
+
+def list_fish_tanks():
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        return []
+    configured = str(get_global_config("WATER_PRIM_PATH", "") or "").strip()
+    if configured:
+        prim = stage.GetPrimAtPath(configured)
+        return [configured] if prim and prim.IsValid() else []
+
+    waters = []
+    for prim in stage.Traverse():
+        if not prim or not prim.IsValid() or prim.GetName() != "Water":
+            continue
+        path = prim.GetPath().pathString
+        if "/Looks/" in path or "/Materials/" in path:
+            continue
+        waters.append(path)
+    return sorted(waters)
+
+
+def _fish_prefix_pattern():
+    prefix = str(get_global_config("FISH_NAME_PREFIX", "Fish_"))
+    return prefix, re.compile(rf"^{re.escape(prefix)}(\d+)$")
+
+
+def _fishes_parent_for_tank(stage, tank_path):
+    water_prim = _find_water_prim_for_tank(stage, tank_path)
+    if not water_prim or not water_prim.IsValid():
+        return None, None
+    fishes_path = water_prim.GetPath().GetParentPath().AppendChild("Fishes")
+    return water_prim, fishes_path
+
+
+def _iter_fish_prims_in_tank(stage, tank_path):
+    _water_prim, fishes_path = _fishes_parent_for_tank(stage, tank_path)
+    if fishes_path is None:
+        return []
+    fishes_parent = stage.GetPrimAtPath(fishes_path)
+    if not fishes_parent or not fishes_parent.IsValid():
+        return []
+    _prefix, pattern = _fish_prefix_pattern()
+    fish_prims = []
+    for child in fishes_parent.GetChildren():
+        if child and child.IsValid() and child.IsActive() and pattern.match(child.GetName()):
+            fish_prims.append(child)
+    return fish_prims
+
+
+def _asset_reference_text(asset_prim):
+    if not asset_prim or not asset_prim.IsValid():
+        return ""
+    parts = []
+    try:
+        refs = asset_prim.GetMetadata("references")
+        if refs is not None:
+            parts.append(str(refs))
+    except Exception:
+        pass
+    try:
+        for spec in asset_prim.GetPrimStack():
+            parts.append(str(getattr(spec, "referenceList", "")))
+    except Exception:
+        pass
+    return " ".join(parts)
+
+
+def _species_for_fish_prim(fish_prim, species_items=None):
+    try:
+        species_id = fish_prim.GetCustomDataByKey("aquacast:species")
+        if species_id:
+            return str(species_id)
+    except Exception:
+        pass
+
+    species_items = species_items or get_fish_species()
+    ref_text = _asset_reference_text(fish_prim.GetChild("Asset"))
+    if ref_text:
+        for item in species_items:
+            asset = str(item.get("asset", ""))
+            if asset and (asset in ref_text or Path(asset).name in ref_text):
+                return item["id"]
+    return "unknown"
+
+
+def count_fish_in_tank(tank_path: str):
+    stage = omni.usd.get_context().get_stage()
+    species = get_fish_species()
+    by_species = {item["id"]: 0 for item in species}
+    if stage is None:
+        return {"total": 0, "by_species": by_species}
+
+    total = 0
+    for fish_prim in _iter_fish_prims_in_tank(stage, str(tank_path)):
+        total += 1
+        species_id = _species_for_fish_prim(fish_prim, species)
+        by_species[species_id] = by_species.get(species_id, 0) + 1
+    return {"total": total, "by_species": by_species}
+
+
+def _fish_population_csv_enabled():
+    return bool(get_global_config("ENABLE_FISH_POPULATION_CSV", True))
+
+
+def _fish_population_csv_path():
+    default_path = Path(__file__).with_name("fish_population.csv")
+    configured = str(get_global_config("FISH_POPULATION_CSV_PATH", str(default_path)) or str(default_path)).strip()
+    return Path(configured).expanduser()
+
+
+def _read_fish_population_csv():
+    path = _fish_population_csv_path()
+    if not path.exists():
+        return None
+
+    species_ids = {item["id"] for item in get_fish_species()}
+    populations = {}
+    try:
+        with path.open("r", encoding="utf-8", newline="") as stream:
+            reader = csv.DictReader(stream)
+            for row in reader:
+                tank_path = str(row.get("tank_path", "") or "").strip()
+                species_id = str(row.get("species_id", "") or "").strip()
+                if not tank_path or species_id not in species_ids:
+                    continue
+                try:
+                    count = max(0, int(float(row.get("count", 0) or 0)))
+                except (TypeError, ValueError):
+                    count = 0
+                populations.setdefault(tank_path, {})[species_id] = count
+        return populations
+    except Exception as exc:
+        carb.log_warn(f"[Aquacast] Failed to read fish population CSV: {path} ({exc})")
+        return None
+
+
+def _clamp_species_counts(counts):
+    max_total = max(0, int(get_global_config("MAX_FISH_PER_TANK", 30)))
+    clamped = {}
+    remaining = max_total
+    for item in get_fish_species():
+        species_id = item["id"]
+        requested = max(0, int(counts.get(species_id, 0)))
+        value = min(requested, remaining)
+        clamped[species_id] = value
+        remaining -= value
+    return clamped
+
+
+def _write_fish_population_csv(populations):
+    path = _fish_population_csv_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        species = get_fish_species()
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=["tank_path", "species_id", "count"])
+            writer.writeheader()
+            for tank_path in sorted(populations):
+                counts = _clamp_species_counts(populations.get(tank_path, {}) or {})
+                for item in species:
+                    writer.writerow({
+                        "tank_path": tank_path,
+                        "species_id": item["id"],
+                        "count": int(counts.get(item["id"], 0)),
+                    })
+        return True
+    except Exception as exc:
+        carb.log_warn(f"[Aquacast] Failed to write fish population CSV: {path} ({exc})")
+        return False
+
+
+def _persist_current_fish_population():
+    if not _fish_population_csv_enabled():
+        return False
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        return False
+    populations = {}
+    for tank_path in list_fish_tanks():
+        counts = count_fish_in_tank(tank_path)
+        populations[tank_path] = dict(counts.get("by_species", {}) or {})
+    return _write_fish_population_csv(populations)
+
+
+def _reset_fishes_group_for_tank(stage, tank_path):
+    water_prim, fishes_path = _fishes_parent_for_tank(stage, tank_path)
+    if water_prim is None or fishes_path is None:
+        return 0
+    session_layer = stage.GetSessionLayer()
+    edit_target = session_layer if session_layer is not None else stage.GetRootLayer()
+    removed = 0
+    with Usd.EditContext(stage, edit_target):
+        existing_fishes = stage.GetPrimAtPath(fishes_path)
+        if existing_fishes and existing_fishes.IsValid():
+            removed_paths = [prim.GetPath() for prim in Usd.PrimRange(existing_fishes)]
+            for prim_path in sorted(removed_paths, key=lambda path: len(path.pathString), reverse=True):
+                stage.RemovePrim(prim_path)
+                prim = stage.GetPrimAtPath(prim_path)
+                if prim and prim.IsValid():
+                    prim.SetActive(False)
+                removed += 1
+        fishes_parent = stage.DefinePrim(fishes_path, "Xform")
+        fishes_parent.SetActive(True)
+    return removed
+
+
+def _fish_entries_from_counts(counts):
+    species = _species_by_id()
+    entries = []
+    for species_id, count in _clamp_species_counts(counts).items():
+        item = species.get(species_id)
+        if item is None:
+            continue
+        for _ in range(max(0, int(count))):
+            entries.append({
+                "species_id": species_id,
+                "asset": item["asset"],
+                "scale": item["scale"],
+            })
+    return entries
+
+
+def _spawn_fish_counts_in_tank(stage, tank_path, counts, seed):
+    entries = _fish_entries_from_counts(counts)
+    if not entries:
+        removed = _reset_fishes_group_for_tank(stage, tank_path)
+        if removed:
+            carb.log_info(f"[Aquacast] Fish population CSV reset empty tank={tank_path} removed={removed}")
+        return []
+    return _reset_and_spawn_fish_entries(stage, tank_path, entries, seed=seed)
+
+
+def _fish_change_refresh():
+    if _stage_structure_cache is not None:
+        _stage_structure_cache.refresh()
+        if should_export_stage_topology_json():
+            _stage_structure_cache.export_topology_json()
+    if _fish_swim_controller is not None:
+        _fish_swim_controller._initialized = False
+        asyncio.ensure_future(_fish_swim_controller.initialize_after_frames(1))
+
+
+def _remove_fish_prims(stage, fish_prims):
+    removed = 0
+    for prim in fish_prims:
+        path = prim.GetPath()
+        try:
+            _remove_composed_child(stage, path)
+            removed += 1
+        except Exception as exc:
+            carb.log_warn(f"[Aquacast] Fish remove failed path={path}: {exc}")
+    return removed
+
+
+def add_fish(tank_path, species_id, count):
+    requested = max(0, int(count))
+    result = {"requested": requested, "added": 0, "clamped": False, "status": "ok"}
+    if requested <= 0:
+        result["status"] = "수량을 1 이상 입력"
+        return result
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        result["status"] = "스테이지/탱크 없음"
+        return result
+
+    species = _species_by_id()
+    item = species.get(str(species_id))
+    if item is None:
+        result["status"] = "unknown species"
+        carb.log_warn(f"[Aquacast] Fish add skipped: unknown species={species_id}")
+        return result
+
+    max_total = int(get_global_config("MAX_FISH_PER_TANK", 30))
+    current = count_fish_in_tank(str(tank_path))
+    effective = dynamic_fish_spawn.clamp_add_count(requested, current.get("total", 0), max_total)
+    result["clamped"] = effective < requested
+    if effective <= 0:
+        result["status"] = "탱크 최대 수량 도달"
+        return result
+
+    water_prim, fishes_path = _fishes_parent_for_tank(stage, str(tank_path))
+    if water_prim is None or fishes_path is None:
+        result["status"] = "스테이지/탱크 없음"
+        return result
+
+    asset_path = str(item["asset"])
+    if not os.path.exists(asset_path):
+        result["status"] = "species asset missing"
+        carb.log_warn(f"[Aquacast] Fish add skipped: asset missing species={species_id} path={asset_path}")
+        return result
+
+    center, radius, min_up, max_up, up_axis, radial_axes = _compute_water_bounds_with_axes(water_prim)
+    existing_parent = stage.GetPrimAtPath(fishes_path)
+    existing_names = [child.GetName() for child in existing_parent.GetChildren()] if existing_parent and existing_parent.IsValid() else []
+    prefix = str(get_global_config("FISH_NAME_PREFIX", "Fish_"))
+    indices = dynamic_fish_spawn.next_fish_indices(existing_names, effective, prefix)
+    seed_base = _resolve_fish_rng_seed(get_global_config("FISH_RNG_SEED", 42))
+    seed = int(seed_base + time.monotonic_ns() % 1000003)
+    positions = dynamic_fish_spawn.sample_positions(effective, radius, min_up, max_up, seed + 1)
+    yaws = dynamic_fish_spawn.sample_yaws(effective, seed + 2)
+    fish_scale = max(0.0, float(item["scale"]))
+
+    session_layer = stage.GetSessionLayer()
+    edit_target = session_layer if session_layer is not None else stage.GetRootLayer()
+    created = []
+    with Usd.EditContext(stage, edit_target):
+        fishes_parent = stage.DefinePrim(fishes_path, "Xform")
+        fishes_parent.SetActive(True)
+        for index, position, yaw in zip(indices, positions, yaws):
+            fish_path = fishes_path.AppendChild(f"{prefix}{index:02d}")
+            asset_prim_path = fish_path.AppendChild("Asset")
+            try:
+                fish_prim = stage.DefinePrim(fish_path, "Xform")
+                fish_prim.SetActive(True)
+                fish_prim.SetCustomDataByKey("aquacast:species", str(item["id"]))
+                for child in list(fish_prim.GetChildren()):
+                    _remove_composed_child(stage, child.GetPath())
+
+                xform = UsdGeom.Xformable(fish_prim)
+                xform.ClearXformOpOrder()
+                coords = [float(center[0]), float(center[1]), float(center[2])]
+                coords[radial_axes[0]] = float(center[radial_axes[0]] + position[0])
+                coords[radial_axes[1]] = float(center[radial_axes[1]] + position[1])
+                coords[up_axis] = float(position[2])
+                xform.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(coords[0], coords[1], coords[2]))
+                xform.AddRotateXYZOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(Gf.Vec3f(0.0, 0.0, float(yaw)))
+                xform.AddScaleOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(Gf.Vec3f(fish_scale, fish_scale, fish_scale))
+
+                asset_prim = stage.DefinePrim(asset_prim_path, "Xform")
+                asset_prim.SetActive(True)
+                _set_single_reference(asset_prim, asset_path)
+                created.append(fish_path.pathString)
+            except Exception as exc:
+                carb.log_warn(f"[Aquacast] Fish add failed path={fish_path}: {exc}")
+
+    result["added"] = len(created)
+    if created:
+        _fish_change_refresh()
+        _persist_current_fish_population()
+    if result["clamped"]:
+        result["status"] = "clamped"
+    return result
+
+
+def remove_fish(tank_path, species_id, count):
+    requested = max(0, int(count))
+    result = {"requested": requested, "removed": 0, "status": "ok"}
+    if requested <= 0:
+        result["status"] = "수량을 1 이상 입력"
+        return result
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        result["status"] = "스테이지/탱크 없음"
+        return result
+
+    species = get_fish_species()
+    matches = []
+    prefix, pattern = _fish_prefix_pattern()
+    for prim in _iter_fish_prims_in_tank(stage, str(tank_path)):
+        if _species_for_fish_prim(prim, species) != str(species_id):
+            continue
+        match = pattern.match(prim.GetName())
+        index = int(match.group(1)) if match else 0
+        matches.append((index, prim))
+    matches.sort(key=lambda item: item[0], reverse=True)
+    effective = dynamic_fish_spawn.clamp_remove_count(requested, len(matches))
+    if effective <= 0:
+        result["status"] = "선택한 종 없음"
+        return result
+
+    session_layer = stage.GetSessionLayer()
+    edit_target = session_layer if session_layer is not None else stage.GetRootLayer()
+    with Usd.EditContext(stage, edit_target):
+        result["removed"] = _remove_fish_prims(stage, [prim for _index, prim in matches[:effective]])
+    if result["removed"]:
+        _fish_change_refresh()
+        _persist_current_fish_population()
+    return result
+
+
+def clear_fish(tank_path):
+    result = {"removed": 0, "status": "ok"}
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        result["status"] = "스테이지/탱크 없음"
+        return result
+    fish_prims = _iter_fish_prims_in_tank(stage, str(tank_path))
+    if not fish_prims:
+        result["status"] = "empty"
+        return result
+    session_layer = stage.GetSessionLayer()
+    edit_target = session_layer if session_layer is not None else stage.GetRootLayer()
+    with Usd.EditContext(stage, edit_target):
+        result["removed"] = _remove_fish_prims(stage, fish_prims)
+    if result["removed"]:
+        _fish_change_refresh()
+        _persist_current_fish_population()
+    return result
 
 
 class DynamicFishSpawner:
@@ -947,6 +1442,33 @@ class DynamicFishSpawner:
         if stage_key and self._spawned_stage_key == stage_key and not random_seed_mode:
             return
 
+        seed = _resolve_fish_rng_seed(seed_config)
+        tank_paths = self._discover_tanks(stage)
+        if not tank_paths:
+            carb.log_info("[Aquacast] Dynamic fish skipped: no Water prims found")
+            return
+
+        csv_populations = _read_fish_population_csv() if _fish_population_csv_enabled() else None
+        if csv_populations is not None:
+            total = 0
+            touched = 0
+            for offset, tank_path in enumerate(tank_paths):
+                created = _spawn_fish_counts_in_tank(
+                    stage,
+                    tank_path,
+                    csv_populations.get(tank_path, {}),
+                    seed + offset * 1009,
+                )
+                total += len(created)
+                touched += 1
+                carb.log_info(
+                    f"[Aquacast] Fish population CSV applied: count={len(created)} tank={tank_path}"
+                )
+            if touched:
+                self._spawned_stage_key = stage_key
+                _fish_change_refresh()
+            return
+
         default_count = int(get_global_config("DYNAMIC_FISH_COUNT_PER_TANK", 0))
         count = _resolve_dynamic_count(default_count)
         if count <= 0:
@@ -968,12 +1490,6 @@ class DynamicFishSpawner:
             _resolve_dynamic_asset("SALMON_1_ASSET", str(get_global_config("DYNAMIC_FISH_SALMON_1_PATH", "~/cs-project/assets/salmon_1.usd"))),
             _resolve_dynamic_asset("SALMON_2_ASSET", str(get_global_config("DYNAMIC_FISH_SALMON_2_PATH", "~/cs-project/assets/salmon_2.usd"))),
         )
-        seed = _resolve_fish_rng_seed(seed_config)
-
-        tank_paths = self._discover_tanks(stage)
-        if not tank_paths:
-            carb.log_info("[Aquacast] Dynamic fish skipped: no Water prims found")
-            return
 
         total = 0
         for offset, tank_path in enumerate(tank_paths):
@@ -992,13 +1508,7 @@ class DynamicFishSpawner:
 
         if total:
             self._spawned_stage_key = stage_key
-        if total and _stage_structure_cache is not None:
-            _stage_structure_cache.refresh()
-            if should_export_stage_topology_json():
-                _stage_structure_cache.export_topology_json()
-        if total and _fish_swim_controller is not None:
-            _fish_swim_controller._initialized = False
-            asyncio.ensure_future(_fish_swim_controller.initialize_after_frames(1))
+            _fish_change_refresh()
     def _discover_tanks(self, stage):
         waters = []
         configured = str(get_global_config("WATER_PRIM_PATH", "") or "").strip()
