@@ -1,7 +1,7 @@
 EXPORT_STAGE_TOPOLOGY_JSON = False
 ENABLE_STAGE_STRUCTURE_CACHE = False
-STAGE_TOPOLOGY_INCLUDE_TRANSFORMS = True
-STAGE_TOPOLOGY_INCLUDE_BOUNDS = True
+STAGE_TOPOLOGY_INCLUDE_TRANSFORMS = False
+STAGE_TOPOLOGY_INCLUDE_BOUNDS = False
 STAGE_TOPOLOGY_TRANSFORM_PRECISION = 6
 STAGE_TOPOLOGY_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/stage_topology.json"
 
@@ -95,14 +95,17 @@ TEMP_VIS_LOG_INTERVAL_SECONDS = 5.0
 # The particle prim is authored under the resolved Water prim parent, as a sibling of Water.
 ENABLE_WATER_TEMP_PARTICLES = True
 TEMP_PARTICLE_PRIM_PATH = "TemperatureParticlesInsideWater"
-# Use sphere_prims to debug visibility with concrete Sphere prims instead of PointInstancer.
-TEMP_PARTICLE_AUTHORING_MODE = "sphere_prims"
+# Use point_instancer for normal runtime particles; sphere_prims remains available for visibility debugging.
+TEMP_PARTICLE_AUTHORING_MODE = "point_instancer"
 # Increase or decrease this to control how many runtime particles are authored.
-TEMP_PARTICLE_COUNT = 100
+TEMP_PARTICLE_COUNT = 1000
 TEMP_PARTICLE_RANDOM_SEED = 42
 TEMP_PARTICLE_RADIUS_RATIO = 0.94
 TEMP_PARTICLE_HEIGHT_RATIO = 0.94
 TEMP_PARTICLE_UP_AXIS = "Y"
+# Visual radius of each temperature particle. Set to 0.0 to auto-size from the Water radius.
+TEMP_PARTICLE_RADIUS = 50
+# Backward-compatible alias. TEMP_PARTICLE_RADIUS takes precedence when set above 0.0.
 TEMP_PARTICLE_WIDTH = 0.0
 TEMP_PARTICLE_WIDTH_RATIO = 0.03
 TEMP_PARTICLE_MIN_WIDTH = 25.0

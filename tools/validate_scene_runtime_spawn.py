@@ -112,6 +112,10 @@ def main():
             expected_count = int(main_mod.get_global_config("TEMP_PARTICLE_COUNT", 0))
             if len(sphere_children) != expected_count:
                 raise SystemExit(f"expected {expected_count} sphere particle prims, got {len(sphere_children)}")
+        elif authoring_mode == "point_instancer":
+            print(f"[validate] particle_type={particle_prim.GetTypeName()}")
+            if particle_prim.GetTypeName() != "PointInstancer":
+                raise SystemExit(f"expected PointInstancer, got {particle_prim.GetTypeName()}")
 
     swim = main_mod.FishSwimController()
     swim._water_bounds_by_fishes_parent = {}

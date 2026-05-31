@@ -318,14 +318,28 @@ def get_stage_structure():
 
 def _build_topology_name_index(snapshot):
     index = {}
-    stack = list(snapshot.get("tree", []) or [])
-    while stack:
-        node = stack.pop()
-        node_name = node.get("name")
-        path = node.get("path")
-        if node_name and path:
-            index.setdefault(node_name, []).append(path)
-        stack.extend(node.get("children", []) or [])
+    path_list = []
+    if isinstance(snapshot, dict):
+        path_list = snapshot.get("prim_paths") or snapshot.get("paths") or []
+    elif isinstance(snapshot, list):
+        path_list = snapshot
+
+    if path_list:
+        for raw_path in path_list:
+            path = str(raw_path)
+            node_name = path.rstrip("/").rsplit("/", 1)[-1]
+            if node_name and path:
+                index.setdefault(node_name, []).append(path)
+    else:
+        stack = list(snapshot.get("tree", []) or []) if isinstance(snapshot, dict) else []
+        while stack:
+            node = stack.pop()
+            node_name = node.get("name")
+            path = node.get("path")
+            if node_name and path:
+                index.setdefault(node_name, []).append(path)
+            stack.extend(node.get("children", []) or [])
+
     for paths in index.values():
         paths.sort()
     return index
@@ -346,7 +360,13 @@ def _load_topology_json_snapshot():
             return _topology_json_cache.get("snapshot", {}), _topology_json_cache.get("name_index", {})
 
         with topology_path.open("r", encoding="utf-8") as stream:
-            snapshot = json.load(stream)
+            raw_snapshot = json.load(stream)
+        if isinstance(raw_snapshot, list):
+            snapshot = {"prim_paths": [str(path) for path in raw_snapshot if path]}
+        elif isinstance(raw_snapshot, dict):
+            snapshot = raw_snapshot
+        else:
+            snapshot = {}
         name_index = _build_topology_name_index(snapshot)
         _topology_json_cache.update({
             "path": topology_path,
@@ -383,6 +403,14 @@ def _get_topology_paths_by_name(name):
         return list(name_index.get(name, []))
 
     snapshot = _get_topology_snapshot()
+    path_list = snapshot.get("prim_paths") or snapshot.get("paths") or []
+    if path_list:
+        return [
+            str(path)
+            for path in path_list
+            if str(path).rstrip("/").rsplit("/", 1)[-1] == name
+        ]
+
     return [
         node.get("path", "")
         for node in _iter_topology_nodes(snapshot.get("tree", []))
@@ -1649,16 +1677,25 @@ class StageStructureCache:
             lines.extend(self._format_tree_lines(node["children"], depth + 1))
         return lines
 
+    def _flatten_topology_paths(self, nodes):
+        paths = []
+        for node in nodes or []:
+            path = node.get("path")
+            if path:
+                paths.append(path)
+            paths.extend(self._flatten_topology_paths(node.get("children", [])))
+        return paths
+
     def export_topology_json(self):
         output_path = get_stage_topology_json_path()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = self.get_snapshot()
+        payload = self._flatten_topology_paths(self.tree)
 
         with output_path.open("w", encoding="utf-8") as stream:
             json.dump(payload, stream, indent=2)
             stream.write("\n")
 
-        carb.log_info(f"[Aquacast] Stage topology JSON exported: {output_path}")
+        carb.log_info(f"[Aquacast] Stage topology path list exported: {output_path}")
 
     def _on_stage_event(self, event):
         event_type = event.type
@@ -2193,8 +2230,11 @@ class WaterTempController:
                 weight = _smoothstep(0.72, 1.0, radial_norm)
             heat_weights.append(max(0.0, min(1.0, weight)))
 
+        configured_radius = float(get_global_config("TEMP_PARTICLE_RADIUS", 0.0) or 0.0)
         configured_width = float(get_global_config("TEMP_PARTICLE_WIDTH", 0.0) or 0.0)
-        if configured_width > 0.0:
+        if configured_radius > 0.0:
+            width = configured_radius
+        elif configured_width > 0.0:
             width = configured_width
         else:
             width_ratio = float(get_global_config("TEMP_PARTICLE_WIDTH_RATIO", 0.03))
@@ -2280,6 +2320,16 @@ class WaterTempController:
                     prototype.CreatePurposeAttr(UsdGeom.Tokens.default_)
                     prototype_color_attrs.append(prototype.CreateDisplayColorAttr(Vt.Vec3fArray([color])))
                     prototype.CreateDisplayOpacityAttr(Vt.FloatArray([1.0]))
+                    material_path = prototypes_path.AppendChild(f"Material_{index:03d}")
+                    material = UsdShade.Material.Define(stage, material_path)
+                    shader = UsdShade.Shader.Define(stage, material_path.AppendChild("Shader"))
+                    shader.CreateIdAttr("UsdPreviewSurface")
+                    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(color)
+                    shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(color)
+                    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.35)
+                    shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(1.0)
+                    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+                    UsdShade.MaterialBindingAPI(prototype.GetPrim()).Bind(material)
                     prototype_targets.append(prototype_path)
 
                 instancer.CreatePrototypesRel().SetTargets(prototype_targets)
