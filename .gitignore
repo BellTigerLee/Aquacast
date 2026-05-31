@@ -1,2 +1,4 @@
 NvStreamer-*
 .venv/
+
+stage_topology.json

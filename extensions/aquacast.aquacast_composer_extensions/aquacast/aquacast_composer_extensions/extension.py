@@ -140,6 +140,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._dev_reload_last_check = 0.0
         self._dev_reload_requested = False
         self._stage_structure_cache = None
+        self._dynamic_fish_spawner = None
         self._fish_swim_controller = None
         self._water_temp_controller = None
         self._water_quality_controller = None
@@ -177,6 +178,7 @@ class CreateSetupExtension(omni.ext.IExt):
             aquacast_main = _load_aquacast_main_module()
             self._aquacast_main = aquacast_main
             self._stage_structure_cache = aquacast_main.start_stage_structure_cache()
+            self._dynamic_fish_spawner = aquacast_main.start_dynamic_fish_spawner()
             self._fish_swim_controller = aquacast_main.start_fish_swim_controller()
             self._water_temp_controller = aquacast_main.start_water_temp_controller()
             self._water_quality_controller = aquacast_main.start_water_quality_controller()
@@ -912,6 +914,9 @@ class CreateSetupExtension(omni.ext.IExt):
             if self._fish_swim_controller:
                 self._aquacast_main.stop_fish_swim_controller()
                 self._fish_swim_controller = None
+            if self._dynamic_fish_spawner:
+                self._aquacast_main.stop_dynamic_fish_spawner()
+                self._dynamic_fish_spawner = None
             if self._stage_structure_cache:
                 self._aquacast_main.stop_stage_structure_cache()
                 self._stage_structure_cache = None
