@@ -3,6 +3,7 @@ import importlib
 import importlib.util
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -14,12 +15,14 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+import dynamic_fish_spawn  # noqa: E402
 import fish_dynamics  # noqa: E402
 import thermal_dynamics  # noqa: E402
 import water_quality_backend_client  # noqa: E402
 import water_quality_dynamics  # noqa: E402
 import water_quality_model  # noqa: E402
 
+dynamic_fish_spawn = importlib.reload(dynamic_fish_spawn)
 water_quality_backend_client = importlib.reload(water_quality_backend_client)
 water_quality_dynamics = importlib.reload(water_quality_dynamics)
 water_quality_model = importlib.reload(water_quality_model)
@@ -30,6 +33,7 @@ import omni.usd  # noqa: E402
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt  # noqa: E402
 
 _stage_structure_cache = None
+_dynamic_fish_spawner = None
 _fish_swim_controller = None
 _water_temp_controller = None
 _water_quality_controller = None
@@ -65,12 +69,66 @@ def get_global_config(name, default=None):
     return getattr(module, name, default)
 
 
+def _env_value(name):
+    return os.environ.get(f"AQUACAST_{name}")
+
+
+def _warn_env_parse(name, raw, default):
+    carb.log_warn(f"[Aquacast] Invalid AQUACAST_{name}={raw!r}; using default={default!r}")
+
+
+def _resolve_dynamic_count(default):
+    raw = _env_value("DYNAMIC_FISH_COUNT")
+    value = dynamic_fish_spawn.resolve_count(raw, default)
+    if raw is not None:
+        try:
+            dynamic_fish_spawn.resolve_count(raw, default)
+            int(float(str(raw).strip()))
+        except (TypeError, ValueError):
+            _warn_env_parse("DYNAMIC_FISH_COUNT", raw, default)
+    return value
+
+
+def _resolve_dynamic_scale(default, env_name="DYNAMIC_FISH_SCALE"):
+    raw = _env_value(env_name)
+    value = dynamic_fish_spawn.resolve_scale(raw, default)
+    if raw is not None:
+        try:
+            float(str(raw).strip())
+        except (TypeError, ValueError):
+            _warn_env_parse(env_name, raw, default)
+    return value
+
+
+def _resolve_dynamic_mix(default):
+    raw = _env_value("SALMON_MIX")
+    value = dynamic_fish_spawn.resolve_mix_ratio(raw, default)
+    if raw is not None:
+        try:
+            float(str(raw).strip())
+        except (TypeError, ValueError):
+            _warn_env_parse("SALMON_MIX", raw, default)
+    return value
+
+
+def _resolve_dynamic_asset(env_name, default):
+    return dynamic_fish_spawn.resolve_asset_path(_env_value(env_name), default)
+
+
 def start_stage_structure_cache():
     global _stage_structure_cache
     if _stage_structure_cache is None:
         _stage_structure_cache = StageStructureCache()
         _stage_structure_cache.start()
     return _stage_structure_cache
+
+
+def start_dynamic_fish_spawner():
+    global _dynamic_fish_spawner
+    if _dynamic_fish_spawner is None:
+        _dynamic_fish_spawner = DynamicFishSpawner()
+        _dynamic_fish_spawner.start()
+    return _dynamic_fish_spawner
 
 
 def start_fish_swim_controller():
@@ -86,6 +144,13 @@ def stop_stage_structure_cache():
     if _stage_structure_cache is not None:
         _stage_structure_cache.stop()
         _stage_structure_cache = None
+
+
+def stop_dynamic_fish_spawner():
+    global _dynamic_fish_spawner
+    if _dynamic_fish_spawner is not None:
+        _dynamic_fish_spawner.stop()
+        _dynamic_fish_spawner = None
 
 
 def stop_fish_swim_controller():
@@ -509,6 +574,261 @@ def _set_fish_transform(prim, position, direction, *, fish=None, dt=None, realis
             stage.SetEditTarget(previous_edit_target)
 
 
+def _compute_water_bounds_from_prim(water_prim):
+    bbox_cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+        useExtentsHint=True,
+    )
+    aligned = bbox_cache.ComputeWorldBound(water_prim).ComputeAlignedBox()
+    min_v = aligned.GetMin()
+    max_v = aligned.GetMax()
+    center = Gf.Vec3d(
+        (min_v[0] + max_v[0]) * 0.5,
+        (min_v[1] + max_v[1]) * 0.5,
+        (min_v[2] + max_v[2]) * 0.5,
+    )
+    radius = max(0.001, min(max_v[0] - min_v[0], max_v[1] - min_v[1]) * 0.5)
+    vertical_margin = (max_v[2] - min_v[2]) * 0.08
+    return center, radius, min_v[2] + vertical_margin, max_v[2] - vertical_margin
+
+
+def _find_water_prim_for_tank(stage, tank_path):
+    tank = stage.GetPrimAtPath(tank_path)
+    if tank and tank.IsValid():
+        candidates = []
+        for prim in Usd.PrimRange(tank):
+            if prim and prim.IsValid() and prim.GetName() == "Water":
+                path = prim.GetPath().pathString
+                candidates.append((
+                    0 if "/InWater/" in path or path.endswith("/InWater/Water") else 1,
+                    0 if "/Looks/" not in path and "/Materials/" not in path else 1,
+                    path,
+                    prim,
+                ))
+        if candidates:
+            return sorted(candidates, key=lambda item: item[:3])[0][3]
+
+    configured_path = str(get_global_config("WATER_PRIM_PATH", "") or "")
+    if configured_path:
+        prim = stage.GetPrimAtPath(configured_path)
+        if prim and prim.IsValid():
+            return prim
+    return None
+
+
+def _compute_water_bounds_for_tank(stage, tank_path):
+    water_prim = _find_water_prim_for_tank(stage, tank_path)
+    if not water_prim or not water_prim.IsValid():
+        return None
+    return _compute_water_bounds_from_prim(water_prim)
+
+
+def _remove_composed_child(stage, path):
+    stage.RemovePrim(path)
+    prim = stage.GetPrimAtPath(path)
+    if prim and prim.IsValid():
+        prim.SetActive(False)
+
+
+def _set_single_reference(prim, asset_path):
+    refs = prim.GetReferences()
+    if hasattr(refs, "SetReferences"):
+        refs.SetReferences([Sdf.Reference(asset_path)])
+    else:
+        refs.ClearReferences()
+        refs.AddReference(asset_path)
+
+
+def _spawn_fish_in_tank(
+    stage,
+    tank_path: str,
+    count: int,
+    *,
+    salmon_scales: tuple[float, float],
+    asset_paths: tuple[str, str],
+    mix_ratio: float,
+    seed: int,
+    water_bounds: tuple[float, float, float] | None = None,
+) -> list[str]:
+    if count <= 0:
+        return []
+
+    if water_bounds is None:
+        computed = _compute_water_bounds_for_tank(stage, tank_path)
+        if computed is None:
+            carb.log_warn(f"[Aquacast] Dynamic fish skipped: Water prim not found for tank={tank_path}")
+            return []
+        center, radius, min_z, max_z = computed
+    else:
+        radius, min_z, max_z = water_bounds
+        center = Gf.Vec3d(0.0, 0.0, 0.0)
+
+    fishes_path = Sdf.Path(tank_path).AppendChild("InWater").AppendChild("Fishes")
+    session_layer = stage.GetSessionLayer()
+    edit_target = session_layer if session_layer is not None else stage.GetRootLayer()
+    created = []
+
+    with Usd.EditContext(stage, edit_target):
+        existing_fishes = stage.GetPrimAtPath(fishes_path)
+        removed_paths = []
+        if existing_fishes and existing_fishes.IsValid():
+            removed_paths = [prim.GetPath() for prim in Usd.PrimRange(existing_fishes)]
+            for prim_path in sorted(removed_paths, key=lambda path: len(path.pathString), reverse=True):
+                stage.RemovePrim(prim_path)
+                prim = stage.GetPrimAtPath(prim_path)
+                if prim and prim.IsValid():
+                    prim.SetActive(False)
+            carb.log_info(
+                f"[Aquacast] Dynamic fish Fishes group reset: removed={len(removed_paths)} path={fishes_path}"
+            )
+
+        fishes_parent = stage.DefinePrim(fishes_path, "Xform")
+        fishes_parent.SetActive(True)
+
+        prefix = str(get_global_config("FISH_NAME_PREFIX", "Fish_"))
+        indices = dynamic_fish_spawn.next_fish_indices([], count, prefix)
+        asset_choices = dynamic_fish_spawn.assign_assets(count, mix_ratio, seed)
+        positions = dynamic_fish_spawn.sample_positions(count, radius, min_z, max_z, seed + 1)
+        yaws = dynamic_fish_spawn.sample_yaws(count, seed + 2)
+
+        for index, asset_index, position, yaw in zip(indices, asset_choices, positions, yaws):
+            asset_path = asset_paths[asset_index]
+            fish_scale = salmon_scales[asset_index]
+            if not os.path.exists(asset_path):
+                carb.log_warn(f"[Aquacast] Dynamic fish asset missing; skipping path={asset_path}")
+                continue
+            fish_path = fishes_path.AppendChild(f"{prefix}{index:02d}")
+            asset_prim_path = fish_path.AppendChild("Asset")
+            try:
+                fish_prim = stage.DefinePrim(fish_path, "Xform")
+                fish_prim.SetActive(True)
+                for child in list(fish_prim.GetChildren()):
+                    _remove_composed_child(stage, child.GetPath())
+
+                xform = UsdGeom.Xformable(fish_prim)
+                xform.ClearXformOpOrder()
+                xform.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
+                    Gf.Vec3d(center[0] + position[0], center[1] + position[1], position[2])
+                )
+                xform.AddRotateXYZOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(
+                    Gf.Vec3f(0.0, 0.0, float(yaw))
+                )
+                xform.AddScaleOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(
+                    Gf.Vec3f(fish_scale, fish_scale, fish_scale)
+                )
+
+                asset_prim = stage.DefinePrim(asset_prim_path, "Xform")
+                asset_prim.SetActive(True)
+                _set_single_reference(asset_prim, asset_path)
+                created.append(fish_path.pathString)
+            except Exception as exc:
+                carb.log_warn(f"[Aquacast] Dynamic fish spawn failed path={fish_path}: {exc}")
+
+    return created
+
+
+class DynamicFishSpawner:
+    def __init__(self):
+        self._stage_event_sub = None
+        self._spawned_stage_key = None
+
+    def start(self):
+        usd_context = omni.usd.get_context()
+        self._stage_event_sub = usd_context.get_stage_event_stream().create_subscription_to_pop(
+            self._on_stage_event,
+            name="aquacast_dynamic_fish_spawn_stage",
+        )
+        asyncio.ensure_future(self.spawn_after_frames(2))
+
+    def stop(self):
+        self._stage_event_sub = None
+
+    async def spawn_after_frames(self, frames=1):
+        app = omni.kit.app.get_app()
+        for _ in range(frames):
+            await app.next_update_async()
+        self._spawn_all_tanks()
+
+    def _on_stage_event(self, event):
+        if event.type == int(omni.usd.StageEventType.OPENED):
+            self._spawned_stage_key = None
+            asyncio.ensure_future(self.spawn_after_frames(2))
+
+    def _spawn_all_tanks(self):
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return
+        root_layer = stage.GetRootLayer()
+        stage_key = root_layer.identifier if root_layer else ""
+        if stage_key and self._spawned_stage_key == stage_key:
+            return
+
+        default_count = int(get_global_config("DYNAMIC_FISH_COUNT_PER_TANK", 0))
+        count = _resolve_dynamic_count(default_count)
+        if count <= 0:
+            return
+
+        scale = _resolve_dynamic_scale(float(get_global_config("DYNAMIC_FISH_SCALE", 10.0)))
+        salmon_scales = (
+            _resolve_dynamic_scale(
+                float(get_global_config("DYNAMIC_FISH_SALMON_1_SCALE", scale)),
+                "SALMON_1_SCALE",
+            ),
+            _resolve_dynamic_scale(
+                float(get_global_config("DYNAMIC_FISH_SALMON_2_SCALE", scale)),
+                "SALMON_2_SCALE",
+            ),
+        )
+        mix_ratio = _resolve_dynamic_mix(float(get_global_config("DYNAMIC_FISH_SALMON_1_RATIO", 0.5)))
+        asset_paths = (
+            _resolve_dynamic_asset("SALMON_1_ASSET", str(get_global_config("DYNAMIC_FISH_SALMON_1_PATH", "~/cs-project/assets/salmon_1.usd"))),
+            _resolve_dynamic_asset("SALMON_2_ASSET", str(get_global_config("DYNAMIC_FISH_SALMON_2_PATH", "~/cs-project/assets/salmon_2.usd"))),
+        )
+        seed = int(get_global_config("FISH_RNG_SEED", 42))
+
+        tank_paths = self._discover_tanks(stage)
+        if not tank_paths:
+            carb.log_info("[Aquacast] Dynamic fish skipped: no FishTank prims found")
+            return
+
+        total = 0
+        for offset, tank_path in enumerate(tank_paths):
+            created = _spawn_fish_in_tank(
+                stage,
+                tank_path,
+                count,
+                salmon_scales=salmon_scales,
+                asset_paths=asset_paths,
+                mix_ratio=mix_ratio,
+                seed=seed + offset * 1009,
+            )
+            total += len(created)
+            if created:
+                carb.log_info(f"[Aquacast] Dynamic fish spawned: count={len(created)} tank={tank_path}")
+
+        if total:
+            self._spawned_stage_key = stage_key
+        if total and _stage_structure_cache is not None:
+            _stage_structure_cache.refresh()
+            if should_export_stage_topology_json():
+                _stage_structure_cache.export_topology_json()
+        if total and _fish_swim_controller is not None:
+            _fish_swim_controller._initialized = False
+            asyncio.ensure_future(_fish_swim_controller.initialize_after_frames(1))
+
+    def _discover_tanks(self, stage):
+        pattern = re.compile(r"^FishTank(_\d+)?$")
+        tanks = []
+        for prim in stage.Traverse():
+            if not prim or not prim.IsValid() or not pattern.match(prim.GetName()):
+                continue
+            path = prim.GetPath().pathString
+            if "/AquariumComponents/" in path:
+                tanks.append(path)
+        return sorted(tanks)
+
+
 class FishSwimController:
     """Animate numbered Fish prims inside the Water cylinder."""
 
@@ -645,23 +965,11 @@ class FishSwimController:
         self._next_init_retry_time = time.monotonic() + max(0.1, retry_seconds)
 
     def _read_water_bounds(self, water_prim):
-        bbox_cache = UsdGeom.BBoxCache(
-            Usd.TimeCode.Default(),
-            [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
-            useExtentsHint=True,
-        )
-        aligned = bbox_cache.ComputeWorldBound(water_prim).ComputeAlignedBox()
-        min_v = aligned.GetMin()
-        max_v = aligned.GetMax()
-        self._water_center = Gf.Vec3d(
-            (min_v[0] + max_v[0]) * 0.5,
-            (min_v[1] + max_v[1]) * 0.5,
-            (min_v[2] + max_v[2]) * 0.5,
-        )
-        self._water_radius = max(0.001, min(max_v[0] - min_v[0], max_v[1] - min_v[1]) * 0.5)
-        vertical_margin = (max_v[2] - min_v[2]) * 0.08
-        self._water_min_z = min_v[2] + vertical_margin
-        self._water_max_z = max_v[2] - vertical_margin
+        center, radius, min_z, max_z = _compute_water_bounds_from_prim(water_prim)
+        self._water_center = center
+        self._water_radius = radius
+        self._water_min_z = min_z
+        self._water_max_z = max_z
 
     def _find_fish_prims(self, stage):
         prefix = str(get_global_config("FISH_NAME_PREFIX", "Fish_"))
@@ -683,10 +991,11 @@ class FishSwimController:
 
         fish = []
         for prim in stage.Traverse():
-            if (
-                prim.GetPath().GetParentPath().pathString == "/"
-                and _prim_matches_fish_root(prim, pattern, base_name)
-            ):
+            if not _prim_matches_fish_root(prim, pattern, base_name):
+                continue
+            path = prim.GetPath().pathString
+            parent_path = prim.GetPath().GetParentPath().pathString
+            if parent_path == "/" or parent_path.endswith("/Fishes"):
                 fish.append(prim)
         return sorted(fish, key=lambda prim: prim.GetPath().pathString)
 

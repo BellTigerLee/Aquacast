@@ -8,7 +8,18 @@ ENABLE_FISH_SWIMMING = True
 FISH_NAME_PREFIX = "Fish_"
 WATER_PRIM_PATH = "/Root/Group/Water"
 FISH_USE_STAGE_TOPOLOGY_JSON = True
-FISH_INIT_RETRY_SECONDS = 1.0 #1.0
+FISH_INIT_RETRY_SECONDS = 0.7 #1.0
+
+# Runtime fish authoring. Environment variables with the AQUACAST_ prefix
+# take precedence, e.g. AQUACAST_DYNAMIC_FISH_COUNT=40.
+DYNAMIC_FISH_COUNT_PER_TANK =5
+DYNAMIC_FISH_SCALE = 1.0
+DYNAMIC_FISH_SALMON_1_SCALE = 0.5
+DYNAMIC_FISH_SALMON_2_SCALE = 1
+DYNAMIC_FISH_SALMON_1_RATIO = 0.5
+DYNAMIC_FISH_SALMON_1_PATH = "~/cs-project/assets/salmon_1.usd"
+DYNAMIC_FISH_SALMON_2_PATH = "~/cs-project/assets/salmon_2.usd"
+FISH_RNG_SEED = 42
 
 # Fish movement is scaled by the detected Water cylinder radius.
 FISH_SWIM_SPEED_RADIUS_PER_SECOND = 0.12 #0.12
