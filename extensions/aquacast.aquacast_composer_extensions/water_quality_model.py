@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import copy
+import hashlib
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -74,6 +76,15 @@ class SensorReading:
         return {"sensor_name": self.sensor_name, **self.values}
 
 
+@dataclass
+class ParticleField:
+    positions: np.ndarray
+    graph: dict[str, Any]
+    temperatures: np.ndarray
+    heat_weights: np.ndarray
+    graph_hash: str
+
+
 class WaterQualityModel:
     def __init__(
         self,
@@ -96,6 +107,7 @@ class WaterQualityModel:
         self.last_feed_base_kg_h = 0.0
         self._scenario_name = str(scenario_dict.get("name", "baseline"))
         self._particle_feature_cache: dict[str, Any] = {}
+        self._particle_field: ParticleField | None = None
 
     def advance(self, real_dt_s: float, *, temperature_c: float | None = None) -> WaterQualityState:
         sim_h = max(0.0, float(real_dt_s)) * max(0.0, float(self.params.get("time_scale", 1.0)))
@@ -148,6 +160,8 @@ class WaterQualityModel:
         self.params.update(self.constants)
         self.params.update(scenario.get("params", {}))
         self.state = self._state_from_initial(scenario.get("initial_state", scenario.get("state", {})))
+        self._particle_field = None
+        self._particle_feature_cache = {}
         self._action_queue.clear()
         for action in scenario.get("actions", []):
             self.apply_action(action)
@@ -156,16 +170,32 @@ class WaterQualityModel:
 
     def snapshot(self) -> dict[str, float | bool | str]:
         values: dict[str, float | bool | str] = self.state.as_dict()
+        try:
+            heat = thermal_dynamics.net_heat_w(
+                self.state.temperature_c,
+                self.params,
+                inflow_enabled=bool(self.params.get("inflow_enabled", True)),
+            )
+        except Exception:
+            heat = {}
         values.update(
             {
                 "biofilter_on": bool(self.params.get("biofilter_on", True)),
                 "inflow_enabled": bool(self.params.get("inflow_enabled", True)),
                 "flow_lph": float(self.params.get("flow_lph", 0.0)),
+                "q_makeup_lph": float(self.params.get("q_makeup_lph", self.params.get("flow_lph", 0.0))),
                 "fish_count": float(self.params.get("fish_count", 0.0)),
                 "fish_weight_kg": float(self.params.get("fish_weight_kg", 0.0)),
                 "scenario": self._scenario_name,
                 "feed_rate_kg_h": float(self.last_derivatives.get("feed_rate_kg_h", 0.0)),
                 "baseline_feed_kg_h": float(self.last_feed_base_kg_h),
+                "heater_power_w": float(self.params.get("heater_power_w", self.params.get("heater_power", 0.0))),
+                "tank_radius_m": float(self.params.get("tank_radius_m", 1.2)),
+                "tank_water_height_m": float(self.params.get("tank_water_height_m", 2.21)),
+                "thermal_q_net_w": float(heat.get("q_net_w", 0.0)),
+                "thermal_q_surface_w": float(heat.get("q_surface_w", 0.0)),
+                "thermal_q_wall_w": float(heat.get("q_wall_w", 0.0)),
+                "thermal_q_adv_w": float(heat.get("q_adv_w", 0.0)),
             }
         )
         return values
@@ -196,8 +226,51 @@ class WaterQualityModel:
             },
         )
 
+    def register_particles(
+        self,
+        positions: list[Any],
+        heat_weights: list[float] | None = None,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        del tags
+        arr = np.asarray(
+            [[float(pos[0]), float(pos[1]), float(pos[2])] for pos in positions],
+            dtype=np.float64,
+        )
+        if arr.size == 0:
+            arr = np.empty((0, 3), dtype=np.float64)
+        if arr.ndim != 2 or arr.shape[1] != 3:
+            raise ValueError("positions must be an Nx3 array")
+        graph_hash = self._particle_hash(arr)
+        existing = self._particle_field
+        if existing is not None and existing.graph_hash == graph_hash:
+            existing.temperatures += self.state.temperature_c - float(np.mean(existing.temperatures))
+            return {"status": "ok", "count": int(len(arr)), "graph_hash": graph_hash, "reused": True}
+
+        graph = thermal_dynamics.build_knn_graph(arr, int(self.params.get("particle_knn_k", 8)))
+        weights = self._heat_weights_from_positions(arr, heat_weights)
+        self._particle_field = ParticleField(
+            positions=arr,
+            graph=graph,
+            temperatures=np.full(len(arr), self.state.temperature_c, dtype=np.float64),
+            heat_weights=weights,
+            graph_hash=graph_hash,
+        )
+        self._particle_feature_cache = {}
+        return {"status": "ok", "count": int(len(arr)), "graph_hash": graph_hash, "reused": False}
+
+    def registered_particle_values(self) -> dict[str, list[float]]:
+        field = self._particle_field
+        if field is None:
+            return {}
+        values = self.particle_values(field.heat_weights.tolist(), field.positions.tolist())
+        values["temperature"] = field.temperatures.astype(float).tolist()
+        return values
+
     def particle_values(self, heat_weights: list[float], positions: list[Any] | None = None) -> dict[str, list[float]]:
         count = len(heat_weights)
+        if count <= 0 and positions is not None:
+            count = len(positions)
         if count <= 0:
             return {}
 
@@ -238,7 +311,6 @@ class WaterQualityModel:
         if cache.get("key") == cache_key:
             return cache["features"]
 
-        weights = np.clip(np.asarray(heat_weights, dtype=np.float64), 0.0, 1.0)
         if positions is not None and len(positions) >= count:
             arr = np.empty((count, 3), dtype=np.float64)
             for index, pos in enumerate(positions[:count]):
@@ -250,25 +322,27 @@ class WaterQualityModel:
             radial_norm = radial / max(1e-9, float(np.max(radial)))
         else:
             y_norm = np.zeros(count, dtype=np.float64)
-            radial_norm = weights
+            radial_norm = np.zeros(count, dtype=np.float64)
+        weights = np.clip(np.asarray(heat_weights, dtype=np.float64), 0.0, 1.0)
+        if len(weights) != count:
+            weights = radial_norm.copy()
 
         features = {"weights": weights, "y_norm": y_norm, "radial_norm": radial_norm}
         self._particle_feature_cache = {"key": cache_key, "features": features}
         return features
 
     def _advance_one_substep(self, dt_h: float, external_temperature_c: float | None) -> None:
+        dt_s = max(0.0, float(dt_h)) * 3600.0
         if external_temperature_c is None:
-            self.state.temperature_c = thermal_dynamics.step_temperature(
+            self.state.temperature_c = thermal_dynamics.step_temperature_rk4(
                 self.state.temperature_c,
-                dt_h,
-                T_room=float(self.params.get("room_temp_c", 22.0)) + float(self.params.get("heater_power", 0.0)),
-                T_inlet=float(self.params.get("inlet_temp_c", 12.0)),
-                k_room=float(self.params.get("thermal_k_room_h", 0.012)),
-                k_inflow=float(self.params.get("thermal_k_inflow_h", 0.022)),
+                dt_s,
+                self.params,
                 inflow_enabled=bool(self.params.get("inflow_enabled", True)),
             )
         else:
             self.state.temperature_c = float(external_temperature_c)
+        self._advance_particle_field(dt_s)
 
         baseline_feed = self._baseline_feed_kg_h()
         self.last_feed_base_kg_h = baseline_feed
@@ -322,6 +396,78 @@ class WaterQualityModel:
         percent = float(np.interp(float(fish_weight_kg), weights, temp_interp))
         return max(0.0, percent) / 100.0
 
+    def _advance_particle_field(self, dt_s: float) -> None:
+        field = self._particle_field
+        if field is None or len(field.temperatures) == 0:
+            return
+        source = self._particle_source_c_s(field)
+        field.temperatures = thermal_dynamics.diffuse_step(
+            field.temperatures,
+            bulk_temp_c=self.state.temperature_c,
+            graph=field.graph,
+            dt_s=dt_s,
+            diffusion_d=float(self.params.get("particle_diffusion_d", 0.015)),
+            bulk_relax_lambda=float(self.params.get("particle_bulk_relax_lambda", 0.0015)),
+            source_c_s=source,
+        )
+
+    def _particle_source_c_s(self, field: ParticleField) -> np.ndarray:
+        positions = field.positions
+        temps = field.temperatures
+        count = len(temps)
+        if count <= 0:
+            return np.empty((0,), dtype=np.float64)
+
+        y = positions[:, 1]
+        radial = np.hypot(positions[:, 0] - np.mean(positions[:, 0]), positions[:, 2] - np.mean(positions[:, 2]))
+        radial_norm = radial / max(1e-9, float(np.max(radial)))
+        source = np.zeros(count, dtype=np.float64)
+
+        wall_start = float(self.params.get("particle_wall_band_start", 0.85))
+        wall_mask = np.clip((radial_norm - wall_start) / max(1e-9, 1.0 - wall_start), 0.0, 1.0)
+        wall_lambda = max(0.0, float(self.params.get("particle_wall_source_lambda", 0.00025)))
+        room_temp = float(self.params.get("room_temp_c", self.params.get("air_temp_c", 22.0)))
+        source += wall_lambda * wall_mask * (room_temp - temps)
+
+        inlet_location = self._tank_local_to_cloud_world(self.params.get("inlet_location", [-1.1, 1.1, 0.0]), positions)
+        inlet_radius = max(1e-6, float(self.params.get("particle_inlet_radius_m", 0.35)))
+        inlet_mask = self._gaussian_mask(positions, inlet_location, inlet_radius)
+        inlet_lambda = max(0.0, float(self.params.get("particle_inlet_source_lambda", 0.0012)))
+        inlet_temp = float(self.params.get("inlet_temp_c", 12.0))
+        if bool(self.params.get("inflow_enabled", True)):
+            source += inlet_lambda * inlet_mask * (inlet_temp - temps)
+
+        heater_power = float(self.params.get("heater_power_w", self.params.get("heater_power", 0.0)))
+        if heater_power > 0.0:
+            heater_location = self._tank_local_to_cloud_world(self.params.get("heater_location", [1.0, 0.35, 0.0]), positions)
+            heater_radius = max(1e-6, float(self.params.get("particle_heater_radius_m", 0.4)))
+            heater_mask = self._gaussian_mask(positions, heater_location, heater_radius)
+            heat = thermal_dynamics.net_heat_w(self.state.temperature_c, self.params)
+            heat_rate_c_s = heater_power / max(1e-9, float(heat.get("heat_capacity_j_k", 1.0)))
+            source += heat_rate_c_s * heater_mask / max(1e-9, float(np.mean(heater_mask)))
+        return source
+
+    def _heat_weights_from_positions(self, positions: np.ndarray, heat_weights: list[float] | None) -> np.ndarray:
+        if heat_weights is not None and len(heat_weights) == len(positions):
+            return np.clip(np.asarray(heat_weights, dtype=np.float64), 0.0, 1.0)
+        radial = np.hypot(positions[:, 0] - np.mean(positions[:, 0]), positions[:, 2] - np.mean(positions[:, 2]))
+        return np.clip(radial / max(1e-9, float(np.max(radial))), 0.0, 1.0)
+
+    def _tank_local_to_cloud_world(self, local: Any, positions: np.ndarray) -> np.ndarray:
+        values = np.asarray(local, dtype=np.float64)
+        if values.shape != (3,):
+            values = np.zeros(3, dtype=np.float64)
+        center = np.array([np.mean(positions[:, 0]), np.min(positions[:, 1]), np.mean(positions[:, 2])], dtype=np.float64)
+        return center + values
+
+    def _gaussian_mask(self, positions: np.ndarray, center: np.ndarray, radius: float) -> np.ndarray:
+        dist2 = np.sum((positions - center[None, :]) ** 2, axis=1)
+        return np.exp(-dist2 / (2.0 * radius * radius))
+
+    def _particle_hash(self, positions: np.ndarray) -> str:
+        rounded = np.round(np.asarray(positions, dtype=np.float64), decimals=5)
+        return hashlib.sha1(rounded.tobytes()).hexdigest()[:16]
+
     def _drain_actions(self) -> None:
         if not self._action_queue:
             return
@@ -333,10 +479,13 @@ class WaterQualityModel:
                 self.state.feed_pool_kg = max(0.0, self.state.feed_pool_kg + max(0.0, float(action.get("mass_kg", 0.0))))
             elif kind == "set_water_exchange":
                 self.params["flow_lph"] = max(0.0, float(action.get("q_lph", 0.0)))
+                self.params["q_makeup_lph"] = max(0.0, float(action.get("q_lph", 0.0)))
             elif kind == "set_inflow":
                 self.params["inflow_enabled"] = bool(action.get("enabled", True))
             elif kind == "set_heater":
-                self.params["heater_power"] = float(action.get("power", 0.0))
+                power = float(action.get("power_w", action.get("power", 0.0)))
+                self.params["heater_power_w"] = power
+                self.params["heater_power"] = power
             elif kind == "set_biofilter":
                 self.params["biofilter_on"] = bool(action.get("enabled", True))
             elif kind == "set_stock":
@@ -367,6 +516,9 @@ class WaterQualityModel:
             "kla_co2_h": 1.5,
             "k_nitrif_h": 0.8,
             "vtr_max_mg_l_h": 5.0,
+            "nitrif_theta": 1.07,
+            "nitrif_t_ref_c": 20.0,
+            "nitrif_k_o2_mg_l": 1.0,
             "tau_feed_h": 4.0,
             "do_maxFI": 7.0,
             "do_zero": 3.0,
@@ -387,6 +539,32 @@ class WaterQualityModel:
             "mo2_q10": 2.5,
             "mo2_t_ref": 10.0,
             "pk1": 6.35,
+            "tank_radius_m": 1.2,
+            "tank_water_height_m": 2.21,
+            "water_density": 998.0,
+            "water_cp": 4186.0,
+            "u_wall_w_m2k": 5.0,
+            "emissivity": 0.96,
+            "air_temp_c": 22.0,
+            "rel_humidity": 0.60,
+            "air_speed_ms": 0.2,
+            "evap_a_w_m2_kpa": 18.0,
+            "evap_b_w_m2_kpa_per_ms": 12.0,
+            "bowen_gamma_kpa_k": 0.066,
+            "q_makeup_lph": 220.0,
+            "inlet_temp_c": 12.0,
+            "room_temp_c": 22.0,
+            "heater_power_w": 0.0,
+            "particle_diffusion_d": 0.015,
+            "particle_knn_k": 8,
+            "particle_bulk_relax_lambda": 0.0015,
+            "particle_wall_band_start": 0.85,
+            "particle_wall_source_lambda": 0.00025,
+            "particle_inlet_source_lambda": 0.0012,
+            "particle_inlet_radius_m": 0.35,
+            "particle_heater_radius_m": 0.4,
+            "inlet_location": [-1.1, 1.1, 0.0],
+            "heater_location": [1.0, 0.35, 0.0],
         }
 
     def _sensor_factors(self, sensor_name: str) -> dict[str, float]:
@@ -405,8 +583,31 @@ def _read_json(path: str | Path) -> dict[str, Any]:
         return json.load(stream)
 
 
+def _coerce_env_value(raw: str) -> Any:
+    value = raw.strip()
+    if value.lower() in {"true", "false"}:
+        return value.lower() == "true"
+    if value.startswith("[") or value.startswith("{"):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def _apply_env_overrides(constants: dict[str, Any]) -> dict[str, Any]:
+    for key in list(constants.keys()) + list(WaterQualityModel()._default_params().keys()):
+        env_name = f"AQUACAST_WQ_{key.upper()}"
+        if env_name in os.environ:
+            constants[key] = _coerce_env_value(os.environ[env_name])
+    return constants
+
+
 def load_model(constants_path: str | Path, feed_rate_path: str | Path, scenarios_path: str | Path, scenario_name: str) -> WaterQualityModel:
-    constants = _read_json(constants_path)
+    constants = _apply_env_overrides(_read_json(constants_path))
     feed_rate = _read_json(feed_rate_path)
     scenarios = _read_json(scenarios_path)
     scenario = copy.deepcopy(scenarios.get(scenario_name) or scenarios.get("baseline") or {})

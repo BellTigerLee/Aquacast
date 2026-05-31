@@ -6,5 +6,7 @@ services:
     image: aquacast-water-quality-backend:local
     ports:
       - "8765:8765"
+    env_file:
+      - aquacast-backend.env
     environment:
       AQUACAST_WQ_SCENARIO: baseline

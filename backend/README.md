@@ -9,8 +9,11 @@ the stage on the main thread.
 ## Run Locally
 
 ```bash
-python backend/water_quality_backend.py --host 127.0.0.1 --port 8765
+python backend/water_quality_backend.py --env-file backend/aquacast-backend.env --host 127.0.0.1 --port 8765
 ```
+
+Thermal/backend constants can be edited in `backend/aquacast-backend.env`. Individual model keys use
+`AQUACAST_WQ_<UPPERCASE_KEY>`, for example `AQUACAST_WQ_TANK_RADIUS_M=1.2`.
 
 ## Docker
 
@@ -18,7 +21,7 @@ From the repository root:
 
 ```bash
 docker build -f backend/Dockerfile -t aquacast-water-quality-backend:local .
-docker run --rm -p 8765:8765 aquacast-water-quality-backend:local
+docker run --rm --env-file backend/aquacast-backend.env -p 8765:8765 aquacast-water-quality-backend:local
 ```
 
 In another shell:
@@ -48,13 +51,16 @@ make smoke
 - `GET /snapshot`
 - `GET /sensor?name=mixed_tank_outlet`
 - `GET /sensors`
-- `POST /advance` with `{"real_dt_s": 0.25, "temperature_c": 14.0}`
+- `POST /advance` with `{"real_dt_s": 0.25}`; `temperature_c` is only a debug override
 - `POST /action` with actions such as:
   - `{"type": "feed", "mass_kg": 1.0}`
   - `{"type": "set_biofilter", "enabled": false}`
   - `{"type": "set_water_exchange", "q_lph": 2000.0}`
+  - `{"type": "set_heater", "power": 500.0}`
   - `{"type": "load_scenario", "name": "overfeed"}`
 - `POST /particle-values` with `{"heat_weights": [...], "positions": [[x,y,z], ...]}`
+- `POST /particles/register` with `{"positions": [[x,y,z], ...]}`
+- `GET /particles/values`
 
 ## Kit Integration
 

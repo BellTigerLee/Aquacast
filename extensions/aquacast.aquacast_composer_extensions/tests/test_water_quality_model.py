@@ -56,3 +56,37 @@ def test_load_scenario_resets_state():
     model = load_model(DATA / "wq_constants.json", DATA / "wq_feed_rate.json", DATA / "wq_scenarios.json", "baseline")
     assert model.load_scenario("overfeed")
     assert model.state.feed_pool_kg == 2.5
+
+
+def test_backend_owned_temperature_evolves_without_override():
+    model = load_model(DATA / "wq_constants.json", DATA / "wq_feed_rate.json", DATA / "wq_scenarios.json", "baseline")
+    initial = model.state.temperature_c
+    model.advance(60.0)
+    assert model.state.temperature_c != initial
+
+
+def test_heater_action_raises_temperature_response():
+    base = WaterQualityModel({"time_scale": 1.0, "substep_h": 0.0167}, {}, {"initial_state": {"temperature_c": 14.0}})
+    heated = WaterQualityModel({"time_scale": 1.0, "substep_h": 0.0167}, {}, {"initial_state": {"temperature_c": 14.0}})
+    heated.set_heater(1000.0)
+    base.advance(60.0)
+    heated.advance(60.0)
+    assert heated.state.temperature_c > base.state.temperature_c
+
+
+def test_register_advance_particle_values_mean_matches_bulk_temperature():
+    model = WaterQualityModel({"time_scale": 1.0, "substep_h": 0.0167}, {}, {"initial_state": {"temperature_c": 14.0}})
+    result = model.register_particles(
+        [
+            [-1.0, 0.2, 0.0],
+            [0.0, 0.8, 0.0],
+            [1.0, 1.4, 0.0],
+            [0.0, 2.0, 0.8],
+        ]
+    )
+    assert result["count"] == 4
+    model.advance(60.0)
+    values = model.registered_particle_values()
+    assert len(values["temperature"]) == 4
+    mean_temp = sum(values["temperature"]) / len(values["temperature"])
+    assert abs(mean_temp - model.snapshot()["temperature_c"]) < 1e-9
