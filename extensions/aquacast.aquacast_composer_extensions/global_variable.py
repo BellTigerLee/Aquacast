@@ -95,13 +95,18 @@ TEMP_VIS_LOG_INTERVAL_SECONDS = 5.0
 # The particle prim is authored under the resolved Water prim parent, as a sibling of Water.
 ENABLE_WATER_TEMP_PARTICLES = True
 TEMP_PARTICLE_PRIM_PATH = "TemperatureParticlesInsideWater"
-# Increase or decrease this to control how many runtime point particles are authored.
-TEMP_PARTICLE_COUNT = 1000
+# Use sphere_prims to debug visibility with concrete Sphere prims instead of PointInstancer.
+TEMP_PARTICLE_AUTHORING_MODE = "sphere_prims"
+# Increase or decrease this to control how many runtime particles are authored.
+TEMP_PARTICLE_COUNT = 100
 TEMP_PARTICLE_RANDOM_SEED = 42
 TEMP_PARTICLE_RADIUS_RATIO = 0.94
 TEMP_PARTICLE_HEIGHT_RATIO = 0.94
 TEMP_PARTICLE_UP_AXIS = "Y"
-TEMP_PARTICLE_WIDTH = 1.2
+TEMP_PARTICLE_WIDTH = 0.0
+TEMP_PARTICLE_WIDTH_RATIO = 0.03
+TEMP_PARTICLE_MIN_WIDTH = 25.0
+TEMP_PARTICLE_DEBUG_COLOR = (1.0, 0.05, 0.0)
 TEMP_PARTICLE_COLOR_BINS = 64
 TEMP_PARTICLE_HEATING_MODE = "side"
 TEMP_PARTICLE_HEAT_DELTA_C = 2.0

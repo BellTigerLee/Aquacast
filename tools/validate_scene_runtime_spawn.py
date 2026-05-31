@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sys
 
-from pxr import Usd
+from pxr import Gf, Usd, UsdGeom
 
 
 def _quit_kit():
@@ -92,6 +92,26 @@ def main():
             raise SystemExit("temperature particles not authored")
         if particle_prim.GetPath().GetParentPath() != water_prim.GetPath().GetParentPath():
             raise SystemExit("temperature particles are not siblings of Water")
+        sphere_children = [child for child in particle_prim.GetChildren() if child.GetTypeName() == "Sphere"]
+        authoring_mode = str(main_mod.get_global_config("TEMP_PARTICLE_AUTHORING_MODE", "") or "")
+        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy], useExtentsHint=True)
+        water_box = bbox_cache.ComputeWorldBound(water_prim).ComputeAlignedBox()
+        particle_box = bbox_cache.ComputeWorldBound(particle_prim).ComputeAlignedBox()
+        print(f"[validate] water_bbox_min={tuple(round(float(water_box.GetMin()[i]), 3) for i in range(3))}")
+        print(f"[validate] water_bbox_max={tuple(round(float(water_box.GetMax()[i]), 3) for i in range(3))}")
+        print(f"[validate] particle_bbox_min={tuple(round(float(particle_box.GetMin()[i]), 3) for i in range(3))}")
+        print(f"[validate] particle_bbox_max={tuple(round(float(particle_box.GetMax()[i]), 3) for i in range(3))}")
+        if sphere_children:
+            first = sphere_children[0]
+            first_xf = UsdGeom.Xformable(first).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            first_pos = first_xf.ExtractTranslation()
+            radius_attr = UsdGeom.Sphere(first).GetRadiusAttr().Get()
+            print(f"[validate] first_sphere={first.GetPath()} world_pos={tuple(round(float(first_pos[i]), 3) for i in range(3))} radius={radius_attr}")
+        if authoring_mode == "sphere_prims":
+            print(f"[validate] sphere_particle_children={len(sphere_children)}")
+            expected_count = int(main_mod.get_global_config("TEMP_PARTICLE_COUNT", 0))
+            if len(sphere_children) != expected_count:
+                raise SystemExit(f"expected {expected_count} sphere particle prims, got {len(sphere_children)}")
 
     swim = main_mod.FishSwimController()
     swim._water_bounds_by_fishes_parent = {}
