@@ -305,3 +305,74 @@ python3 -m py_compile ...: passed
 - S7: backend JSON 시작 시 1회 파싱.
 
 따라서 이번 변경은 전체 spec 완료가 아니라, 검증 가능한 1차 성능 개선 적용이다.
+
+---
+
+## 8. Backend 심화 분석 (2026-05-31 추가)
+
+> 질문: "백엔드 쪽에서도 최적화할 게 있나, 이미 다 했나?"
+> 결론: **백엔드 핵심은 이미 잘 짜여 있다.** (요청 경로 numpy 벡터화, KNN 그래프는 `graph_hash`로 캐시되어 위치 불변 시 재구성 안 함, `RLock`로 상태 보호 정상.)
+> 단, 아래 **요청당 반복 계산** 4건이 남아 있다. 크기는 sub-ms~수 ms 급(드라마틱하진 않지만 매 0.12s 호출 경로라 누적됨). S5/S7은 §3에 이미 정의됨 — 여기서는 신규 항목만 다룬다.
+
+### B1 — 입자 source 마스크를 substep마다 재계산 〔MEDIUM〕
+
+- **위치**: `water_quality_model.py:399 _advance_particle_field` → `_particle_source_c_s`(약 420~470줄)
+- **현상**: `advance()`는 요청당 `n_steps = ceil(sim_h/substep_h)` 회(기본 입력에서 보통 ~8회) substep을 돈다. 매 substep `_particle_source_c_s`가
+  `radial`, `radial_norm`, `wall_mask`, `inlet_location/inlet_mask`, `heater_location/heater_mask`를 다시 계산한다.
+  그런데 **이 값들은 위치(`field.positions`)에만 의존** → substep 사이에 위치가 안 바뀌므로 **요청당 1번이면 충분**한데 ~8번 중복.
+- **영향(추정)**: gaussian_mask/하이포트가 N=1000에서 각 ~20-50µs → 마스크 묶음 ~100µs × (n_steps-1) ≈ **수백 µs/요청 낭비**.
+- **솔루션**: 위치 의존 마스크를 `ParticleField`에 캐시(그래프와 같은 생명주기, `graph_hash` 기준). substep 루프에선 온도 의존 항
+  `λ*mask*(target_temp - temps)`만 매번 계산.
+
+### B2 — `registered_particle_values`가 매 호출 캐시 미스 + list 왕복 〔MEDIUM, 검증됨〕
+
+- **위치**: `water_quality_model.py:266`
+  ```python
+  values = self.particle_values(field.heat_weights.tolist(), field.positions.tolist())
+  ```
+- **현상(검증)**: `.tolist()`가 **매 호출 새 파이썬 리스트**를 만든다 → `particle_values` → `_particle_features`의 캐시 키
+  `(count, id(heat_weights), id(positions))`가 **항상 다른 `id()`** → 캐시 **상시 미스**. 등록 입자는 위치가 고정이라
+  `y_norm`/`radial_norm`은 상수인데도 매 GET `/particles/values`(~0.12s)마다:
+  ① numpy→list→numpy 왕복(1000×3) ② feature 재계산.
+- **영향(추정)**: ~100-200µs/요청, 0.12s 주기 → 상시 낭비.
+- **솔루션**: 등록 시 `y_norm`/`radial_norm`을 `ParticleField`에 1회 계산해 저장하고, 내부 numpy 네이티브 경로
+  (`particle_values`에 numpy 배열을 그대로 받는 오버로드)를 추가해 `.tolist()` 왕복 제거. 클라이언트 쪽 동일 버그(이미 §H4 주변에서 언급)와 같은 성격.
+
+### B3 — `advance()` substep 수 무상한 → 스파이크 위험 〔MEDIUM, 견고성〕
+
+- **위치**: `water_quality_model.py:117-122`
+- **현상**: `n_steps = ceil(sim_h/substep_h)`에 상한이 없다. extension이 stall 후 `dt`를 5.0s로 클램프해 보내면
+  `n_steps = ceil(5.0/0.0167) ≈ 300` → **한 요청에서 입자 확산 300회** → 수백 ms 블로킹 스파이크(이 요청이 lock도 점유).
+- **솔루션**: `max_substeps`(예: 20-30) 상한을 두고 초과 시 `dt_h`를 키워 흡수(시뮬 정확도 vs 안정성 트레이드오프 — 시각화 용도라 허용 가능).
+
+### B4 — substep 내 상수 재계산(RK4 geometry / diffuse max_row) 〔LOW〕
+
+- **위치**: `thermal_dynamics.py:166~ step_temperature_rk4`(RK4 1스텝에 `net_heat_w`→`tank_geometry` 4회),
+  `thermal_dynamics.diffuse_step`의 `np.max(row_sums)`(그래프 고정 시 상수).
+- **현상**: `tank_geometry`는 지오메트리 파라미터만으로 결정되는 상수인데 substep·RK4 stage마다 재계산. `max(row_sums)`도 그래프 불변이면 상수.
+- **영향**: 각 <1µs~수µs. 무시 가능하나 정리 쉬움(파라미터 변경 시에만 무효화하는 캐시).
+
+### B5 — `reset()`마다 JSON 3개 재로드 〔LOW = §S7〕
+
+- §3 S7과 동일. `water_quality_backend.py:52` → `load_model`이 `wq_constants/feed_rate/scenarios.json` 재read.
+  시작 시 1회 파싱해 dict 보관, `reset()`은 dict 재사용.
+
+### (참고) 동시성
+
+- `RequestHandler`는 `ThreadingHTTPServer` + 전역 `RLock`. 무거운 `/advance`가 lock을 substep 루프 내내 점유하므로
+  동시 `/snapshot`·`/particles/values` GET이 그 뒤에 대기한다. **단일 클라이언트**(현재 extension)에선 어차피 순차 호출이라 실익 작음 → 우선순위 낮음.
+  멀티 뷰어로 확장 시에만 읽기 전용 스냅샷 lock 분리 고려.
+
+### Backend 항목 우선순위 및 기대효과
+
+| 항목 | 위치 | 성격 | 크기 | 권장 |
+|---|---|---|---|---|
+| B2 | `model.py:266` | 캐시 상시 미스 + list 왕복 | 수백µs × 0.12s주기 | **먼저** (검증됨, 명확) |
+| B1 | `model.py:_particle_source_c_s` | substep 중복 마스크 | 수백µs/요청 | 다음 |
+| B3 | `model.py:117` | substep 무상한 스파이크 | 견고성 | 다음 |
+| S7(B5) | `backend.py:52` | reset JSON 재로드 | 경미 | 쉬움 |
+| B4 | `thermal_dynamics.py` | 상수 재계산 | <µs급 | 선택 |
+
+> 솔직한 평가: **백엔드는 이미 합리적**이고, 위 항목은 모두 incremental(sub-ms~수ms)이다.
+> 체감 FPS에 가장 큰 백엔드 관련 개선은 여전히 **S5(메인 스레드에서 동기 HTTP 제거)** — 이건 백엔드 코드가 아니라 *호출 방식*(extension) 문제다.
+> 백엔드 내부 연산만 보면 B2 → B1 → B3 순으로 손대면 깔끔하다.
