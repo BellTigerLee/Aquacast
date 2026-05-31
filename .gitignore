@@ -1,4 +1,6 @@
 NvStreamer-*
 .venv/
 
+__pycache__/
+*.py[cod]
 stage_topology.json
