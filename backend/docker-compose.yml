@@ -61,8 +61,7 @@ services:
       - aquacast-backend.env
     environment:
       AQUACAST_WQ_SCENARIO: baseline
-      # Wire the backend at the in-compose broker. The kafka_publisher (design only,
-      # not yet implemented) reads these; AQUACAST_KAFKA_ENABLED stays 0 by default so
-      # behavior is unchanged until the publisher lands. Set it to 1 once implemented.
+      # Wire the backend at the in-compose broker.
+      AQUACAST_KAFKA_ENABLED: "1"
       AQUACAST_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       AQUACAST_KAFKA_TOPIC: aquacast.water_quality
