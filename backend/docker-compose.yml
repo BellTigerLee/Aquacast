@@ -1,12 +1,68 @@
 services:
+  # Single-node Apache Kafka 4.x broker in KRaft mode (no ZooKeeper).
+  # Data is ephemeral: nothing is persisted, so `docker compose down` clears all topics.
+  kafka:
+    image: apache/kafka:4.2.1
+    container_name: aquacast-kafka
+    ports:
+      - "9092:9092"     # internal/compose listener (also reachable from host)
+      - "29092:29092"   # host listener, advertised as localhost
+    environment:
+      # --- KRaft combined broker + controller node ---
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # --- Listeners ---
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # --- Single-node replication settings ---
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # Web UI for browsing topics / messages / consumer groups.
+  # Connects to the in-compose broker over the internal listener (kafka:9092).
+  kafka-ui:
+    image: kafbat/kafka-ui:latest
+    container_name: aquacast-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"   # browser: http://localhost:8080
+    environment:
+      KAFKA_CLUSTERS_0_NAME: aquacast
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+
   water-quality-backend:
     build:
       context: ..
       dockerfile: backend/Dockerfile
     image: aquacast-water-quality-backend:local
+    container_name: aquacast-wq-backend
+    depends_on:
+      kafka:
+        condition: service_healthy
     ports:
       - "8765:8765"
     env_file:
       - aquacast-backend.env
     environment:
       AQUACAST_WQ_SCENARIO: baseline
+      # Wire the backend at the in-compose broker. The kafka_publisher (design only,
+      # not yet implemented) reads these; AQUACAST_KAFKA_ENABLED stays 0 by default so
+      # behavior is unchanged until the publisher lands. Set it to 1 once implemented.
+      AQUACAST_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      AQUACAST_KAFKA_TOPIC: aquacast.water_quality
