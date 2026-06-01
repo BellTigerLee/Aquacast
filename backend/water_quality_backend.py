@@ -19,11 +19,15 @@ from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = Path(__file__).resolve().parent
 EXT_ROOT = ROOT / "extensions" / "aquacast.aquacast_composer_extensions"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 if str(EXT_ROOT) not in sys.path:
     sys.path.insert(0, str(EXT_ROOT))
 
 from water_quality_model import DEFAULT_SENSOR_NAMES, load_model  # noqa: E402
+from kafka_publisher import KafkaPublisher  # noqa: E402
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -45,13 +49,17 @@ class WaterQualityBackend:
         self.scenario_name = scenario_name
         self._lock = threading.RLock()
         self.model = load_model(constants_path, feed_rate_path, scenarios_path, scenario_name)
+        self.kafka = KafkaPublisher()
+        self.kafka.start()
 
     def reset(self, scenario_name: str | None = None) -> dict[str, Any]:
         with self._lock:
             name = scenario_name or self.scenario_name
             self.model = load_model(self.constants_path, self.feed_rate_path, self.scenarios_path, name)
             self.scenario_name = name
-            return self.snapshot()
+            snap = self.snapshot()
+            self.kafka.publish_state(self)
+            return snap
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -63,7 +71,9 @@ class WaterQualityBackend:
     def advance(self, real_dt_s: float, temperature_c: float | None = None) -> dict[str, Any]:
         with self._lock:
             self.model.advance(real_dt_s, temperature_c=temperature_c)
-            return self.snapshot()
+            snap = self.snapshot()
+            self.kafka.publish_state(self)
+            return snap
 
     def action(self, payload: dict[str, Any]) -> dict[str, Any]:
         kind = str(payload.get("type", "")).strip()
@@ -259,6 +269,10 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            RequestHandler.backend.kafka.close()
+        except Exception:
+            pass
         server.server_close()
 
 
