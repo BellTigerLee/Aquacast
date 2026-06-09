@@ -46,6 +46,39 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
       DYNAMIC_CONFIG_ENABLED: "true"
 
+  # SQLite CLI sidecar. It creates a persistent local DB file that the backend
+  # can access through the shared sqlite-data volume at /data/aquacast.db.
+  sqlite:
+    image: alpine/sqlite:3.51.2
+    container_name: aquacast-sqlite
+    entrypoint: /bin/sh
+    command: -c "sqlite3 /data/aquacast.db 'PRAGMA journal_mode=WAL;' >/dev/null && tail -f /dev/null"
+    volumes:
+      - sqlite-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "sqlite3 /data/aquacast.db 'SELECT 1;' >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  sqlitebrowser:
+    image: linuxserver/sqlitebrowser:3.13.1
+    container_name: aquacast-sqlitebrowser
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: Etc/UTC
+    ports:
+      - "13000:3000"
+      - "13001:3001"
+    volumes:
+      - sqlitebrowser-config:/config
+      - sqlite-data:/data
+    restart: unless-stopped
+
   water-quality-backend:
     build:
       context: ..
@@ -55,8 +88,12 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      sqlite:
+        condition: service_healthy
     ports:
       - "8765:8765"
+    volumes:
+      - sqlite-data:/data
     env_file:
       - aquacast-backend.env
     environment:
@@ -65,3 +102,7 @@ services:
       AQUACAST_KAFKA_ENABLED: "1"
       AQUACAST_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       AQUACAST_KAFKA_TOPIC: aquacast.water_quality
+
+volumes:
+  sqlite-data:
+  sqlitebrowser-config:
