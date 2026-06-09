@@ -19,6 +19,30 @@ MEASUREMENT_KEYS = (
     "nitrate_mg_l",
 )
 
+SENSOR_MEASUREMENT_KEYS = {
+    "inlet_reference": (
+        "alkalinity_mg_l_as_caco3",
+    ),
+    "feed_zone_tan": (
+        "tan_mg_l",
+        "nh3_mg_l",
+    ),
+    "fish_core_do": (
+        "temperature_c",
+        "ph",
+    ),
+    "bottom_co2": (
+        "co2_mg_l",
+    ),
+    "biofilter_sentinel": (
+        "nitrite_mg_l",
+        "nitrate_mg_l",
+    ),
+    "mixed_tank_outlet": (
+        "dissolved_oxygen_mg_l",
+    ),
+}
+
 
 def iso_from_ms(event_time_ms: int) -> str:
     dt = datetime.fromtimestamp(event_time_ms / 1000.0, tz=timezone.utc)
@@ -47,6 +71,7 @@ def build_message(
     if not sensor_name:
         return None
 
+    measurement_keys = SENSOR_MEASUREMENT_KEYS.get(sensor_name, MEASUREMENT_KEYS)
     message = {
         "schema_version": schema_version,
         "source": source,
@@ -55,7 +80,7 @@ def build_message(
         "event_time": iso_from_ms(event_time_ms),
         "event_time_ms": event_time_ms,
         "seq": seq,
-        "measurements": {key: reading[key] for key in MEASUREMENT_KEYS if key in reading},
+        "measurements": {key: reading[key] for key in measurement_keys if key in reading},
     }
     if sim_time_h is not None:
         message["sim_time_h"] = sim_time_h

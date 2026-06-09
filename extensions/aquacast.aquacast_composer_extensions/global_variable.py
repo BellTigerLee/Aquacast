@@ -3,10 +3,10 @@ ENABLE_STAGE_STRUCTURE_CACHE = False
 STAGE_TOPOLOGY_INCLUDE_TRANSFORMS = False
 STAGE_TOPOLOGY_INCLUDE_BOUNDS = False
 STAGE_TOPOLOGY_TRANSFORM_PRECISION = 6
-STAGE_TOPOLOGY_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/stage_topology.json"
+STAGE_TOPOLOGY_JSON_PATH = "/home/user/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/stage_topology.json"
 
 ENABLE_AUTO_OPEN_STAGE = True
-AUTO_OPEN_STAGE_PATH = "/home/netai-sys/cs-project/assets/scene.usd"
+AUTO_OPEN_STAGE_PATH = "/home/user/cs-project/assets/scene.usd"
 
 ENABLE_FISH_SWIMMING = True
 FISH_NAME_PREFIX = "Fish_"
@@ -30,7 +30,7 @@ ENABLE_FISH_MANAGEMENT_UI = True
 MAX_FISH_PER_TANK = 30
 FISH_MANAGEMENT_UI_UPDATE_INTERVAL_SECONDS = 0.5
 ENABLE_FISH_POPULATION_CSV = True
-FISH_POPULATION_CSV_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/fish_population.csv"
+FISH_POPULATION_CSV_PATH = "/home/user/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/fish_population.csv"
 FISH_SPECIES = [
     {
         "id": "salmon_1",
@@ -148,9 +148,9 @@ TEMP_SENSOR_UPDATE_INTERVAL_SECONDS = 0.5
 ENABLE_WATER_QUALITY = True
 ENABLE_WATER_QUALITY_SIM = ENABLE_WATER_QUALITY
 WQ_ENABLE_NO2 = False
-WQ_CONSTANTS_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_constants.json"
-WQ_FEED_RATE_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_feed_rate.json"
-WQ_SCENARIOS_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_scenarios.json"
+WQ_CONSTANTS_JSON_PATH = "/home/user/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_constants.json"
+WQ_FEED_RATE_JSON_PATH = "/home/user/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_feed_rate.json"
+WQ_SCENARIOS_JSON_PATH = "/home/user/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_scenarios.json"
 WQ_SCENARIO_NAME = "baseline"
 WQ_BACKEND_ENABLED = True
 WQ_BACKEND_URL = "http://127.0.0.1:8765"
