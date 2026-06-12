@@ -28,6 +28,7 @@ if str(EXT_ROOT) not in sys.path:
 
 from water_quality_model import DEFAULT_SENSOR_NAMES, load_model  # noqa: E402
 from kafka_publisher import KafkaPublisher  # noqa: E402
+import aquacast_db  # noqa: E402
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -256,12 +257,19 @@ def main() -> None:
     parser.add_argument("--host", default=os.environ.get("AQUACAST_BACKEND_HOST", DEFAULT_HOST))
     parser.add_argument("--port", type=int, default=int(os.environ.get("AQUACAST_BACKEND_PORT", DEFAULT_PORT)))
     parser.add_argument("--scenario", default=os.environ.get("AQUACAST_WQ_SCENARIO", "baseline"))
+    parser.add_argument("--db-path", default=str(aquacast_db.db_path_from_env()))
+    parser.add_argument("--db-drop", action="store_true", help="DROP Aquacast SQLite tables before creating them")
     args = parser.parse_args()
 
     _load_env_file(Path(args.env_file))
     host = os.environ.get("AQUACAST_BACKEND_HOST", args.host)
     port = int(os.environ.get("AQUACAST_BACKEND_PORT", args.port))
     scenario = os.environ.get("AQUACAST_WQ_SCENARIO", args.scenario)
+    db_path = Path(os.environ.get("AQUACAST_DB_PATH", args.db_path))
+    db_drop = args.db_drop or aquacast_db._truthy(os.environ.get("AQUACAST_DB_DROP"))
+    aquacast_db.init_db(db_path, drop=db_drop)
+    db_action = "dropped and created" if db_drop else "created if missing"
+    print(f"Aquacast SQLite schema {db_action}: {db_path}", flush=True)
     server = build_server(host, port, scenario)
     print(f"Aquacast water-quality backend listening on http://{host}:{port}", flush=True)
     try:

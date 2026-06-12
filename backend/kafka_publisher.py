@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 import kafka_payload
+import aquacast_db
 
 
 log = logging.getLogger("aquacast.kafka")
@@ -47,9 +48,20 @@ class KafkaPublisher:
         self.delivery_timeout_ms = _int_env(env, "AQUACAST_KAFKA_DELIVERY_TIMEOUT_MS", 10000)
         self.max_buffer = _int_env(env, "AQUACAST_KAFKA_MAX_BUFFER_MESSAGES", 100000)
         self.flush_s = _float_env(env, "AQUACAST_KAFKA_FLUSH_ON_SHUTDOWN_SECONDS", 3.0)
+        self.db_enabled = not _truthy(env.get("AQUACAST_DB_DISABLED"))
+        self.db_path = aquacast_db.db_path_from_env(env)
         self._producer: Any | None = None
+        self._store: aquacast_db.WideMessageStore | None = None
         self._seq = 0
         self._dropped = 0
+
+        if self.db_enabled:
+            try:
+                self._store = aquacast_db.WideMessageStore(self.db_path)
+                log.info("[Aquacast DB] writer ready -> %s", self.db_path)
+            except Exception as exc:
+                log.error("[Aquacast DB] writer unavailable (%s); DB insert disabled", exc)
+                self._store = None
 
     def start(self) -> None:
         if not self.enabled:
@@ -86,9 +98,6 @@ class KafkaPublisher:
         log.info("[Aquacast Kafka] producer ready -> %s topic=%s", self.bootstrap, self.topic)
 
     def publish_state(self, backend: Any) -> None:
-        if not self.enabled or self._producer is None:
-            return
-
         event_time_ms = int(time.time() * 1000)
         try:
             readings = backend.all_sensors()["readings"]
@@ -99,7 +108,8 @@ class KafkaPublisher:
 
         for reading in readings:
             self._publish_reading(reading, event_time_ms, sim_time_h)
-        self._producer.poll(0)
+        if self._producer is not None:
+            self._producer.poll(0)
 
     def _publish_reading(self, reading: dict, event_time_ms: int, sim_time_h: Any) -> None:
         self._seq += 1
@@ -113,10 +123,20 @@ class KafkaPublisher:
         if message is None:
             return
 
+        message_key = kafka_payload.message_key(self.tank_id, reading["sensor_name"])
+        if self._store is not None:
+            try:
+                self._store.insert_kafka_message(message, topic=self.topic)
+            except Exception as exc:
+                log.warning("[Aquacast DB] insert failed: %s", exc)
+
+        if not self.enabled or self._producer is None:
+            return
+
         try:
             self._producer.produce(
                 self.topic,
-                key=kafka_payload.message_key(self.tank_id, reading["sensor_name"]),
+                key=message_key,
                 value=kafka_payload.serialize(message),
                 on_delivery=self._on_delivery,
             )
@@ -138,3 +158,8 @@ class KafkaPublisher:
                 self._producer.flush(self.flush_s)
             finally:
                 self._producer = None
+        if self._store is not None:
+            try:
+                self._store.close()
+            finally:
+                self._store = None
