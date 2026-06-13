@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import threading
 from typing import Any
@@ -33,6 +34,12 @@ import aquacast_db  # noqa: E402
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+DEFAULT_THRESHOLDS = {
+    "dissolved_oxygen_mg_l": {"value": 8.0, "mode": "min"},
+    "tan_mg_l": {"value": 2.0, "mode": "max"},
+    "ph": {"value": 8.5, "mode": "max"},
+    "co2_mg_l": {"value": 15.0, "mode": "max"},
+}
 
 
 class WaterQualityBackend:
@@ -43,6 +50,7 @@ class WaterQualityBackend:
         feed_rate_path: Path,
         scenarios_path: Path,
         scenario_name: str,
+        thresholds_path: Path | None = None,
     ):
         self.constants_path = constants_path
         self.feed_rate_path = feed_rate_path
@@ -50,78 +58,113 @@ class WaterQualityBackend:
         self.scenario_name = scenario_name
         self._lock = threading.RLock()
         self.model = load_model(constants_path, feed_rate_path, scenarios_path, scenario_name)
+        self._tank_models: dict[str, Any] = {}
+        self._tank_ids: dict[str, str] = {}
+        self.thresholds_path = Path(
+            thresholds_path
+            or os.environ.get("AQUACAST_WQ_THRESHOLDS_PATH", str(BACKEND_ROOT / "wq_metric_thresholds.json"))
+        )
         self.kafka = KafkaPublisher()
         self.kafka.start()
 
     def reset(self, scenario_name: str | None = None) -> dict[str, Any]:
         with self._lock:
             name = scenario_name or self.scenario_name
-            self.model = load_model(self.constants_path, self.feed_rate_path, self.scenarios_path, name)
+            self.model = self._new_model(name)
+            self._tank_models.clear()
+            self._tank_ids.clear()
             self.scenario_name = name
             snap = self.snapshot()
             self.kafka.publish_state(self)
             return snap
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, tank_key: str | None = None) -> dict[str, Any]:
         with self._lock:
-            snap = dict(self.model.snapshot())
-            snap["status"] = "ok"
-            snap["backend"] = "aquacast-water-quality"
+            model = self._model_for_tank(tank_key, create=bool(tank_key))
+            snap = self._snapshot_for_model(model, tank_key)
+            if not tank_key and self._tank_models:
+                snap["tank_snapshots"] = self._tank_snapshots()
             return snap
+
+    def thresholds(self) -> dict[str, Any]:
+        with self._lock:
+            return {"status": "ok", "thresholds": self._read_thresholds()}
+
+    def set_thresholds(self, thresholds: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            values = self._normalize_thresholds(thresholds)
+            self.thresholds_path.parent.mkdir(parents=True, exist_ok=True)
+            self.thresholds_path.write_text(
+                json.dumps(values, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            return {"status": "ok", "thresholds": values}
 
     def advance(self, real_dt_s: float, temperature_c: float | None = None) -> dict[str, Any]:
         with self._lock:
             self.model.advance(real_dt_s, temperature_c=temperature_c)
+            for model in self._tank_models.values():
+                model.advance(real_dt_s, temperature_c=None)
             snap = self.snapshot()
             self.kafka.publish_state(self)
             return snap
 
     def action(self, payload: dict[str, Any]) -> dict[str, Any]:
-        kind = str(payload.get("type", "")).strip()
+        kind = str(payload.get("type", payload.get("action", ""))).strip().lower()
         with self._lock:
-            if kind in {"feed", "apply_feed"}:
-                self.model.apply_feed(float(payload.get("mass_kg", 0.0)))
-            elif kind == "set_water_exchange":
-                self.model.set_water_exchange(float(payload.get("q_lph", 0.0)))
-            elif kind == "set_inflow":
-                self.model.set_inflow(bool(payload.get("enabled", True)))
-            elif kind == "set_heater":
-                self.model.set_heater(float(payload.get("power", 0.0)))
-            elif kind == "set_biofilter":
-                self.model.set_biofilter(bool(payload.get("enabled", True)))
-            elif kind == "set_stock":
-                self.model.set_stock(float(payload.get("fish_count", payload.get("n", 0.0))), float(payload.get("fish_weight_kg", payload.get("w_kg", 1.0))))
-            elif kind == "load_scenario":
-                loaded = self.model.load_scenario(str(payload.get("name", "baseline")))
-                if not loaded:
-                    raise ValueError(f"unknown scenario: {payload.get('name')}")
-            elif kind == "reset":
-                return self.reset(str(payload.get("name", self.scenario_name)))
-            else:
-                raise ValueError(f"unknown action type: {kind}")
-            return self.snapshot()
+            if kind == "reset":
+                tank_key = self._tank_key(payload)
+                if tank_key:
+                    model = self._new_model(str(payload.get("scenario_name") or payload.get("name") or self.scenario_name))
+                    self._tank_models[tank_key] = model
+                    result = self._snapshot_for_model(model, tank_key)
+                    self.kafka.publish_state(self)
+                    return result
+                return self.reset(str(payload.get("scenario_name") or payload.get("name") or self.scenario_name))
+            tank_key = self._tank_key(payload)
+            model = self._model_for_tank(tank_key, create=bool(tank_key))
+            result = model.apply_control(payload)
+            if tank_key:
+                result["tank_path"] = tank_key
+                result["tank_id"] = self._tank_id(tank_key)
+            self.kafka.publish_state(self)
+            return result
 
-    def sensor(self, sensor_name: str) -> dict[str, Any]:
+    def sensor(self, sensor_name: str, tank_key: str | None = None) -> dict[str, Any]:
         with self._lock:
             name = sensor_name or "mixed_tank_outlet"
-            reading = self.model.sensor_reading(name).as_dict()
+            model = self._model_for_tank(tank_key, create=bool(tank_key))
+            reading = model.sensor_reading(name).as_dict()
             reading["status"] = "ok"
+            self._attach_tank_fields(reading, tank_key)
+            self._attach_actuator_fields(reading, model)
             return reading
 
-    def all_sensors(self) -> dict[str, Any]:
+    def all_sensors(self, tank_key: str | None = None) -> dict[str, Any]:
         with self._lock:
+            if tank_key:
+                model = self._model_for_tank(tank_key, create=True)
+                return {
+                    "status": "ok",
+                    "readings": self._sensor_readings(model, tank_key),
+                }
+            readings = self._sensor_readings(self.model, None)
+            for key, model in self._tank_models.items():
+                readings.extend(self._sensor_readings(model, key))
             return {
                 "status": "ok",
-                "readings": [self.model.sensor_reading(name).as_dict() for name in DEFAULT_SENSOR_NAMES],
+                "readings": readings,
             }
 
     def particle_values(self, payload: dict[str, Any]) -> dict[str, Any]:
         heat_weights = payload.get("heat_weights") or []
         positions = payload.get("positions")
         with self._lock:
+            tank_key = self._tank_key(payload)
+            model = self._model_for_tank(tank_key, create=bool(tank_key))
             return {
                 "status": "ok",
-                "values": self.model.particle_values(heat_weights, positions),
+                "values": model.particle_values(heat_weights, positions),
             }
 
     def register_particles(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -129,14 +172,138 @@ class WaterQualityBackend:
         heat_weights = payload.get("heat_weights")
         tags = payload.get("tags")
         with self._lock:
-            return self.model.register_particles(positions, heat_weights, tags)
+            tank_key = self._tank_key(payload)
+            result = self._model_for_tank(tank_key, create=bool(tank_key)).register_particles(positions, heat_weights, tags)
+            self._attach_tank_fields(result, tank_key)
+            return result
 
-    def registered_particle_values(self) -> dict[str, Any]:
+    def registered_particle_values(self, tank_key: str | None = None) -> dict[str, Any]:
         with self._lock:
             return {
                 "status": "ok",
-                "values": self.model.registered_particle_values(),
+                "values": self._model_for_tank(tank_key, create=bool(tank_key)).registered_particle_values(),
             }
+
+    def _new_model(self, scenario_name: str | None = None):
+        return load_model(
+            self.constants_path,
+            self.feed_rate_path,
+            self.scenarios_path,
+            scenario_name or self.scenario_name,
+        )
+
+    def _tank_key(self, payload: dict[str, Any] | None) -> str:
+        payload = payload or {}
+        return str(payload.get("tank_path") or payload.get("tank_id") or "").strip()
+
+    def _model_for_tank(self, tank_key: str | None, *, create: bool):
+        key = str(tank_key or "").strip()
+        if not key:
+            return self.model
+        if key not in self._tank_models:
+            if not create:
+                return self.model
+            self._tank_models[key] = self._new_model(self.scenario_name)
+            self._tank_ids[key] = self._derive_tank_id(key)
+        return self._tank_models[key]
+
+    def _snapshot_for_model(self, model: Any, tank_key: str | None) -> dict[str, Any]:
+        snap = dict(model.snapshot())
+        snap["status"] = "ok"
+        snap["backend"] = "aquacast-water-quality"
+        self._attach_tank_fields(snap, tank_key)
+        return snap
+
+    def _tank_snapshots(self) -> dict[str, Any]:
+        return {
+            key: self._snapshot_for_model(model, key)
+            for key, model in sorted(self._tank_models.items())
+        }
+
+    def _sensor_readings(self, model: Any, tank_key: str | None) -> list[dict[str, Any]]:
+        readings = []
+        for name in DEFAULT_SENSOR_NAMES:
+            reading = model.sensor_reading(name).as_dict()
+            self._attach_tank_fields(reading, tank_key)
+            self._attach_actuator_fields(reading, model)
+            readings.append(reading)
+        return readings
+
+    def _attach_actuator_fields(self, payload: dict[str, Any], model: Any) -> None:
+        snap = model.snapshot()
+        for key in (
+            "sim_time_h",
+            "inflow_enabled",
+            "inlet_enabled",
+            "outlet_enabled",
+            "biofilter_on",
+            "mechanical_filter_on",
+            "heater_on",
+            "flow_lph",
+            "q_makeup_lph",
+            "heater_power_w",
+            "turbidity_settle_h",
+        ):
+            if key in snap:
+                payload[key] = snap[key]
+
+    def _attach_tank_fields(self, payload: dict[str, Any], tank_key: str | None) -> None:
+        key = str(tank_key or "").strip()
+        if not key:
+            return
+        payload["tank_path"] = key
+        payload["tank_id"] = self._tank_id(key)
+
+    def _tank_id(self, tank_key: str) -> str:
+        key = str(tank_key or "").strip()
+        if key not in self._tank_ids:
+            self._tank_ids[key] = self._derive_tank_id(key)
+        return self._tank_ids[key]
+
+    def _derive_tank_id(self, tank_key: str) -> str:
+        parts = [part for part in str(tank_key).strip("/").split("/") if part]
+        if parts and parts[-1] == "Water":
+            parts = parts[:-1]
+        generic = {"Root", "scene", "Meshes", "Model", "Components", "Component", "Water"}
+        label = "tank"
+        for part in reversed(parts):
+            if part in generic:
+                continue
+            if part.startswith("Group") and part[5:].isdigit():
+                continue
+            label = part
+            break
+        return re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-") or "tank"
+
+    def _read_thresholds(self) -> dict[str, Any]:
+        if self.thresholds_path.exists():
+            try:
+                return self._normalize_thresholds(json.loads(self.thresholds_path.read_text(encoding="utf-8")))
+            except Exception:
+                pass
+        return self._normalize_thresholds(DEFAULT_THRESHOLDS)
+
+    def _normalize_thresholds(self, thresholds: dict[str, Any] | None) -> dict[str, Any]:
+        raw = thresholds.get("thresholds") if isinstance(thresholds, dict) and "thresholds" in thresholds else thresholds
+        raw = raw if isinstance(raw, dict) else {}
+        normalized = {}
+        for key, default in DEFAULT_THRESHOLDS.items():
+            item = raw.get(key, default)
+            if isinstance(item, dict):
+                value = item.get("value", default["value"])
+                mode = item.get("mode", default["mode"])
+            else:
+                value = item
+                mode = default["mode"]
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                value = float(default["value"])
+            mode = str(mode or default["mode"]).strip().lower()
+            if mode not in {"min", "max"}:
+                mode = default["mode"]
+            normalized[key] = {"value": value, "mode": mode}
+        return normalized
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -145,17 +312,20 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        tank_key = self._query_value(query, "tank_path") or self._query_value(query, "tank_id")
         try:
             if parsed.path == "/health":
                 self._write_json({"status": "ok", "service": "aquacast-water-quality"})
+            elif parsed.path == "/thresholds":
+                self._write_json(self.backend.thresholds())
             elif parsed.path == "/snapshot":
-                self._write_json(self.backend.snapshot())
+                self._write_json(self.backend.snapshot(tank_key))
             elif parsed.path == "/sensor":
-                self._write_json(self.backend.sensor((query.get("name") or ["mixed_tank_outlet"])[0]))
+                self._write_json(self.backend.sensor(self._query_value(query, "name") or "mixed_tank_outlet", tank_key))
             elif parsed.path == "/sensors":
-                self._write_json(self.backend.all_sensors())
+                self._write_json(self.backend.all_sensors(tank_key))
             elif parsed.path == "/particles/values":
-                self._write_json(self.backend.registered_particle_values())
+                self._write_json(self.backend.registered_particle_values(tank_key))
             else:
                 self._write_json({"status": "error", "error": "not found"}, status=404)
         except Exception as exc:
@@ -174,8 +344,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                 )
             elif parsed.path == "/action":
                 self._write_json(self.backend.action(payload))
+            elif parsed.path == "/thresholds":
+                self._write_json(self.backend.set_thresholds(payload.get("thresholds", payload)))
             elif parsed.path == "/reset":
-                self._write_json(self.backend.reset(payload.get("scenario_name") or payload.get("name")))
+                if payload.get("tank_path") or payload.get("tank_id"):
+                    self._write_json(self.backend.action({"type": "reset", **payload}))
+                else:
+                    self._write_json(self.backend.reset(payload.get("scenario_name") or payload.get("name")))
             elif parsed.path == "/particle-values":
                 self._write_json(self.backend.particle_values(payload))
             elif parsed.path == "/particles/register":
@@ -195,6 +370,12 @@ class RequestHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         if os.environ.get("AQUACAST_BACKEND_ACCESS_LOG", "0") == "1":
             super().log_message(fmt, *args)
+
+    def _query_value(self, query: dict[str, list[str]], name: str) -> str:
+        values = query.get(name) or []
+        if not values:
+            return ""
+        return str(values[0]).strip()
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")

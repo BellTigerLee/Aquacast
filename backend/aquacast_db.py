@@ -23,6 +23,7 @@ BACKEND_ROOT = Path(__file__).resolve().parent
 DEFAULT_DOCKER_DB_PATH = Path("/data/aquacast.db")
 DEFAULT_LOCAL_DB_PATH = BACKEND_ROOT / "aquacast.db"
 WIDE_TABLE = "aquacast_wide"
+THRESHOLD_ALERT_TABLE = "aquacast_threshold_alerts"
 SENSOR_COLUMNS = tuple(kafka_payload.SENSOR_MEASUREMENT_KEYS.keys())
 
 
@@ -55,8 +56,10 @@ def init_db(db_path: Path | str, *, drop: bool = False) -> None:
         conn.execute("PRAGMA foreign_keys=ON")
         if drop:
             conn.execute(f"DROP TABLE IF EXISTS {WIDE_TABLE}")
+            conn.execute(f"DROP TABLE IF EXISTS {THRESHOLD_ALERT_TABLE}")
             conn.execute("DROP TABLE IF EXISTS water_quality_kafka_wide")
         conn.executescript(_create_schema_sql())
+        _ensure_schema_columns(conn)
         conn.commit()
 
 
@@ -88,6 +91,26 @@ class WideMessageStore:
                 topic=topic,
                 partition=partition,
                 offset=offset,
+            )
+            self._conn.commit()
+
+    def insert_threshold_alert(
+        self,
+        message: dict[str, Any],
+        *,
+        topic: str | None = None,
+        partition: int | None = None,
+        offset: int | None = None,
+        message_key: str | bytes | None = None,
+    ) -> None:
+        with self._lock:
+            insert_threshold_alert(
+                self._conn,
+                message,
+                topic=topic,
+                partition=partition,
+                offset=offset,
+                message_key=message_key,
             )
             self._conn.commit()
 
@@ -163,6 +186,63 @@ def insert_kafka_message(
     )
 
 
+def insert_threshold_alert(
+    conn: sqlite3.Connection,
+    message: dict[str, Any],
+    *,
+    topic: str | None = None,
+    partition: int | None = None,
+    offset: int | None = None,
+    message_key: str | bytes | None = None,
+) -> None:
+    """Store one threshold alert payload for later incident/LLM analysis."""
+
+    del message_key
+    alert_id = str(message.get("alert_id") or "")
+    tank_id = str(message.get("tank_id") or "")
+    event_time_ms = message.get("event_time_ms")
+    if not alert_id or not tank_id or event_time_ms is None:
+        raise ValueError("threshold alert requires alert_id, tank_id, and event_time_ms")
+
+    row = {
+        "topic": topic,
+        "partition": partition,
+        "offset": offset,
+        "schema_version": message.get("schema_version"),
+        "source": message.get("source"),
+        "alert_id": alert_id,
+        "message_type": message.get("message_type"),
+        "event_type": message.get("event_type"),
+        "severity": message.get("severity"),
+        "tank_id": tank_id,
+        "tank_name": message.get("tank_name"),
+        "tank_path": message.get("tank_path"),
+        "event_time": message.get("event_time"),
+        "event_time_ms": event_time_ms,
+        "seq": message.get("seq"),
+        "sim_time_h": message.get("sim_time_h"),
+        "violated_parameter_names_json": _json_text(message.get("violated_parameter_names") or []),
+        "violations_json": _json_text(message.get("violations") or []),
+        "thresholds_json": _json_text(message.get("thresholds") or {}),
+        "measurements_json": _json_text(message.get("measurements") or {}),
+        "stock_json": _json_text(message.get("stock") or {}),
+        "loads_json": _json_text(message.get("loads") or {}),
+        "payload_json": _json_text(message),
+        "created_at": _utc_now_iso(),
+    }
+    columns = tuple(row.keys())
+    placeholders = ",".join("?" for _ in columns)
+    assignments = ",".join(f"{column} = excluded.{column}" for column in columns if column != "alert_id")
+    conn.execute(
+        f"""
+        INSERT INTO {THRESHOLD_ALERT_TABLE} ({','.join(columns)})
+        VALUES ({placeholders})
+        ON CONFLICT(alert_id) DO UPDATE SET {assignments}
+        """,
+        tuple(row[column] for column in columns),
+    )
+
+
 def _insert_new_wide_row(
     conn: sqlite3.Connection,
     message: dict[str, Any],
@@ -211,6 +291,10 @@ def _append_payload_json(existing: str | None, message: dict[str, Any]) -> str:
     return json.dumps(payloads, separators=(",", ":"), sort_keys=True)
 
 
+def _json_text(value: Any) -> str:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
 def _int_or_zero(value: Any) -> int:
     try:
         return int(value)
@@ -251,7 +335,59 @@ CREATE INDEX IF NOT EXISTS idx_{WIDE_TABLE}_event_time_ms
 
 CREATE INDEX IF NOT EXISTS idx_{WIDE_TABLE}_tank_time
     ON {WIDE_TABLE}(tank_id, event_time_ms);
+
+CREATE TABLE IF NOT EXISTS {THRESHOLD_ALERT_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic TEXT,
+    partition INTEGER,
+    offset INTEGER,
+    schema_version INTEGER,
+    source TEXT NOT NULL,
+    alert_id TEXT NOT NULL UNIQUE,
+    message_type TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    severity TEXT,
+    tank_id TEXT NOT NULL,
+    tank_name TEXT,
+    tank_path TEXT,
+    event_time TEXT NOT NULL,
+    event_time_ms INTEGER NOT NULL,
+    seq INTEGER,
+    sim_time_h REAL,
+    violated_parameter_names_json TEXT NOT NULL,
+    violations_json TEXT NOT NULL,
+    thresholds_json TEXT NOT NULL,
+    measurements_json TEXT NOT NULL,
+    stock_json TEXT NOT NULL,
+    loads_json TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_{THRESHOLD_ALERT_TABLE}_event_time_ms
+    ON {THRESHOLD_ALERT_TABLE}(event_time_ms);
+
+CREATE INDEX IF NOT EXISTS idx_{THRESHOLD_ALERT_TABLE}_tank_time
+    ON {THRESHOLD_ALERT_TABLE}(tank_id, event_time_ms);
+
+CREATE INDEX IF NOT EXISTS idx_{THRESHOLD_ALERT_TABLE}_event_type
+    ON {THRESHOLD_ALERT_TABLE}(event_type);
 """
+
+
+def _ensure_schema_columns(conn: sqlite3.Connection) -> None:
+    existing = {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({WIDE_TABLE})").fetchall()
+    }
+    for key in SENSOR_COLUMNS:
+        if key not in existing:
+            conn.execute(f"ALTER TABLE {WIDE_TABLE} ADD COLUMN {key} BOOLEAN NOT NULL DEFAULT FALSE")
+            existing.add(key)
+    for key in kafka_payload.MEASUREMENT_KEYS:
+        if key not in existing:
+            conn.execute(f"ALTER TABLE {WIDE_TABLE} ADD COLUMN {key} REAL")
+            existing.add(key)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Initialize Aquacast SQLite schema")

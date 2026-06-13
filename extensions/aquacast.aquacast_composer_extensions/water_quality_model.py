@@ -34,6 +34,8 @@ class WaterQualityState:
     tan_mg_l: float = 0.3
     co2_mg_l: float = 5.0
     alkalinity_mg_l_as_caco3: float = 120.0
+    salinity_ppt: float = 0.2
+    turbidity_ntu: float = 2.0
     feed_pool_kg: float = 0.0
     sim_time_h: float = 0.0
 
@@ -58,6 +60,8 @@ class WaterQualityState:
             "tan_mg_l": self.tan_mg_l,
             "co2_mg_l": self.co2_mg_l,
             "alkalinity_mg_l_as_caco3": self.alkalinity_mg_l_as_caco3,
+            "salinity_ppt": self.salinity_ppt,
+            "turbidity_ntu": self.turbidity_ntu,
             "ph": ph,
             "nh3_mg_l": self.tan_mg_l * dynamics.nh3_fraction(self.temperature_c, ph),
             "feed_pool_kg": self.feed_pool_kg,
@@ -134,6 +138,18 @@ class WaterQualityModel:
     def apply_action(self, action: Mapping[str, Any]) -> None:
         self._action_queue.append(dict(action))
 
+    def apply_control(self, action: Mapping[str, Any]) -> dict[str, Any]:
+        """Apply an operator/AI control action immediately and return a snapshot."""
+        self._apply_action_now(dict(action))
+        snap = self.snapshot()
+        snap["status"] = "ok"
+        snap["action"] = str(action.get("type", action.get("action", ""))).strip().lower()
+        if action.get("tank_path") is not None:
+            snap["tank_path"] = str(action.get("tank_path"))
+        if action.get("tank_id") is not None:
+            snap["tank_id"] = str(action.get("tank_id"))
+        return snap
+
     def apply_feed(self, mass_kg: float) -> None:
         self.apply_action({"type": "feed", "mass_kg": float(mass_kg)})
 
@@ -170,6 +186,7 @@ class WaterQualityModel:
 
     def snapshot(self) -> dict[str, float | bool | str]:
         values: dict[str, float | bool | str] = self.state.as_dict()
+        derivative_values = self._current_derivatives()
         try:
             heat = thermal_dynamics.net_heat_w(
                 self.state.temperature_c,
@@ -178,18 +195,40 @@ class WaterQualityModel:
             )
         except Exception:
             heat = {}
+        inflow_enabled = bool(self.params.get("inflow_enabled", True))
+        flow_lph = float(self.params.get("flow_lph", 0.0))
+        q_makeup_lph = float(self.params.get("q_makeup_lph", flow_lph))
+        heater_power_w = float(self.params.get("heater_power_w", self.params.get("heater_power", 0.0)))
+        turbidity_settle_h = float(self.params.get("turbidity_settle_h", 0.0))
         values.update(
             {
                 "biofilter_on": bool(self.params.get("biofilter_on", True)),
-                "inflow_enabled": bool(self.params.get("inflow_enabled", True)),
-                "flow_lph": float(self.params.get("flow_lph", 0.0)),
-                "q_makeup_lph": float(self.params.get("q_makeup_lph", self.params.get("flow_lph", 0.0))),
+                "inflow_enabled": inflow_enabled,
+                "inlet_enabled": bool(inflow_enabled and q_makeup_lph > 0.0),
+                "outlet_enabled": bool(inflow_enabled and flow_lph > 0.0),
+                "mechanical_filter_on": bool(turbidity_settle_h > 0.0),
+                "heater_on": bool(heater_power_w > 0.0),
+                "flow_lph": flow_lph,
+                "q_makeup_lph": q_makeup_lph,
                 "fish_count": float(self.params.get("fish_count", 0.0)),
                 "fish_weight_kg": float(self.params.get("fish_weight_kg", 0.0)),
                 "scenario": self._scenario_name,
-                "feed_rate_kg_h": float(self.last_derivatives.get("feed_rate_kg_h", 0.0)),
+                "feed_rate_kg_h": float(derivative_values.get("feed_rate_kg_h", 0.0)),
+                "biomass_kg": float(derivative_values.get("biomass_kg", 0.0)),
+                "fish_o2_mg_h": float(derivative_values.get("fish_o2_mg_h", 0.0)),
+                "feed_o2_mg_h": float(derivative_values.get("feed_o2_mg_h", 0.0)),
+                "total_o2_mg_h": float(derivative_values.get("total_o2_mg_h", 0.0)),
+                "fish_co2_mg_h": float(derivative_values.get("fish_co2_mg_h", 0.0)),
+                "feed_co2_mg_h": float(derivative_values.get("feed_co2_mg_h", 0.0)),
+                "total_co2_mg_h": float(derivative_values.get("total_co2_mg_h", 0.0)),
+                "fish_tan_kg_h": float(derivative_values.get("fish_tan_kg_h", 0.0)),
+                "feed_tan_kg_h": float(derivative_values.get("feed_tan_kg_h", 0.0)),
+                "total_tan_kg_h": float(derivative_values.get("total_tan_kg_h", 0.0)),
+                "r_nitrif_mg_l_h": float(derivative_values.get("r_nitrif_mg_l_h", 0.0)),
+                "turbidity_source_ntu_h": float(derivative_values.get("turbidity_source_ntu_h", 0.0)),
                 "baseline_feed_kg_h": float(self.last_feed_base_kg_h),
-                "heater_power_w": float(self.params.get("heater_power_w", self.params.get("heater_power", 0.0))),
+                "heater_power_w": heater_power_w,
+                "turbidity_settle_h": turbidity_settle_h,
                 "tank_radius_m": float(self.params.get("tank_radius_m", 1.2)),
                 "tank_water_height_m": float(self.params.get("tank_water_height_m", 2.21)),
                 "thermal_q_net_w": float(heat.get("q_net_w", 0.0)),
@@ -200,6 +239,14 @@ class WaterQualityModel:
         )
         return values
 
+    def _current_derivatives(self) -> dict[str, float]:
+        try:
+            self.last_feed_base_kg_h = self._baseline_feed_kg_h()
+            self.last_derivatives = dynamics.derivatives(self.state.as_dict(), self.params)
+        except Exception:
+            pass
+        return self.last_derivatives
+
     def sensor_reading(self, sensor_name: str) -> SensorReading:
         name = sensor_name if sensor_name in DEFAULT_SENSOR_NAMES else "mixed_tank_outlet"
         factors = self._sensor_factors(name)
@@ -209,6 +256,16 @@ class WaterQualityModel:
         do = max(0.0, snap["dissolved_oxygen_mg_l"] * factors.get("dissolved_oxygen", factors.get("do", 1.0)))
         co2 = max(0.0, snap["co2_mg_l"] * factors.get("co2", 1.0))
         alk = max(0.0, snap["alkalinity_mg_l_as_caco3"] * factors.get("alkalinity", 1.0))
+        salinity = max(0.0, snap["salinity_ppt"] * factors.get("salinity", 1.0))
+        turbidity = max(0.0, snap["turbidity_ntu"] * factors.get("turbidity", 1.0))
+        if name == "inlet_reference":
+            temp = float(self.params.get("inlet_temp_c", temp))
+            tan = max(0.0, float(self.params.get("tan_in_mg_l", 0.0)))
+            do = max(0.0, float(self.params.get("do_in", do)))
+            co2 = max(0.0, float(self.params.get("co2_eq", co2)))
+            alk = max(0.0, float(self.params.get("alk_in", alk)))
+            salinity = max(0.0, float(self.params.get("salinity_in_ppt", salinity)))
+            turbidity = max(0.0, float(self.params.get("turbidity_in_ntu", turbidity)))
         ph = dynamics.clamp(dynamics.ph_from_carbonate(co2, alk) + factors.get("ph_offset", 0.0), 4.0, 10.0)
         return SensorReading(
             sensor_name=name,
@@ -219,6 +276,8 @@ class WaterQualityModel:
                 "tan_mg_l": tan,
                 "co2_mg_l": co2,
                 "alkalinity_mg_l_as_caco3": alk,
+                "salinity_ppt": salinity,
+                "turbidity_ntu": turbidity,
                 "ph": ph,
                 "nh3_mg_l": tan * dynamics.nh3_fraction(temp, ph),
                 "nitrite_mg_l": 0.0,
@@ -284,12 +343,16 @@ class WaterQualityModel:
         co2_weight = np.clip(0.55 * (1.0 - y_norm) + 0.45 * radial_norm, 0.0, 1.0)
         do_weight = np.clip(0.45 * y_norm + 0.55 * (1.0 - weights), 0.0, 1.0)
         ph_weight = co2_weight
+        turbidity_weight = np.clip(0.55 * weights + 0.45 * (1.0 - y_norm), 0.0, 1.0)
+        salinity_weight = np.clip(0.55 * radial_norm + 0.45 * y_norm, 0.0, 1.0)
 
         temperature = state.temperature_c + 0.15 * weights
         tan = np.maximum(0.0, state.tan_mg_l * (0.78 + 0.44 * tan_weight))
         co2 = np.maximum(0.0, state.co2_mg_l * (0.82 + 0.36 * co2_weight))
         do = np.maximum(0.0, state.dissolved_oxygen_mg_l * (0.92 + 0.16 * do_weight))
         alk = np.maximum(0.0, state.alkalinity_mg_l_as_caco3 * (1.0 - 0.025 * ph_weight))
+        salinity = np.maximum(0.0, state.salinity_ppt * (0.99 + 0.02 * salinity_weight))
+        turbidity = np.maximum(0.0, state.turbidity_ntu * (0.75 + 0.55 * turbidity_weight))
         alk_mol = np.maximum(1e-12, alk / 50000.0)
         co2_mol = np.maximum(1e-12, co2 / 44000.0)
         ph = np.clip(6.35 + np.log10(alk_mol / co2_mol), 4.0, 10.0)
@@ -301,6 +364,8 @@ class WaterQualityModel:
             "tan": tan.tolist(),
             "co2": co2.tolist(),
             "alkalinity": alk.tolist(),
+            "salinity": salinity.tolist(),
+            "turbidity": turbidity.tolist(),
             "ph": ph.tolist(),
             "nh3": nh3.tolist(),
         }
@@ -362,6 +427,8 @@ class WaterQualityModel:
             0.0,
             self.state.alkalinity_mg_l_as_caco3 + deriv["alkalinity_mg_l_as_caco3"] * dt_h,
         )
+        self.state.salinity_ppt = max(0.0, self.state.salinity_ppt + deriv["salinity_ppt"] * dt_h)
+        self.state.turbidity_ntu = max(0.0, self.state.turbidity_ntu + deriv["turbidity_ntu"] * dt_h)
 
     def _baseline_feed_kg_h(self) -> float:
         fish_count = max(0.0, float(self.params.get("fish_count", 200.0)))
@@ -474,25 +541,71 @@ class WaterQualityModel:
         actions = self._action_queue
         self._action_queue = []
         for action in actions:
-            kind = str(action.get("type", "")).strip().lower()
-            if kind in {"feed", "apply_feed"}:
-                self.state.feed_pool_kg = max(0.0, self.state.feed_pool_kg + max(0.0, float(action.get("mass_kg", 0.0))))
-            elif kind == "set_water_exchange":
-                self.params["flow_lph"] = max(0.0, float(action.get("q_lph", 0.0)))
-                self.params["q_makeup_lph"] = max(0.0, float(action.get("q_lph", 0.0)))
-            elif kind == "set_inflow":
-                self.params["inflow_enabled"] = bool(action.get("enabled", True))
-            elif kind == "set_heater":
-                power = float(action.get("power_w", action.get("power", 0.0)))
-                self.params["heater_power_w"] = power
-                self.params["heater_power"] = power
-            elif kind == "set_biofilter":
-                self.params["biofilter_on"] = bool(action.get("enabled", True))
-            elif kind == "set_stock":
-                self.params["fish_count"] = max(0.0, float(action.get("fish_count", action.get("n", 0.0))))
-                self.params["fish_weight_kg"] = max(1e-9, float(action.get("fish_weight_kg", action.get("w_kg", 1.0))))
-            elif kind == "load_scenario":
-                self.load_scenario(str(action.get("name", "baseline")))
+            self._apply_action_now(action)
+
+    def _apply_action_now(self, action: Mapping[str, Any]) -> None:
+        kind = str(action.get("type", action.get("action", ""))).strip().lower()
+        if kind in {"feed", "apply_feed", "feed_pulse"}:
+            self.state.feed_pool_kg = max(0.0, self.state.feed_pool_kg + max(0.0, float(action.get("mass_kg", action.get("kg", 0.0)))))
+        elif kind in {"set_water_exchange", "set_flow_rate"}:
+            q_lph = max(0.0, float(action.get("q_lph", action.get("flow_lph", 0.0))))
+            self.params["flow_lph"] = q_lph
+            self.params["q_makeup_lph"] = q_lph
+        elif kind == "set_inflow":
+            self.params["inflow_enabled"] = bool(action.get("enabled", True))
+        elif kind == "set_temperature":
+            self.state.temperature_c = float(action.get("temperature_c", action.get("target_temperature_c", self.state.temperature_c)))
+            if self._particle_field is not None and len(self._particle_field.temperatures) > 0:
+                self._particle_field.temperatures += self.state.temperature_c - float(np.mean(self._particle_field.temperatures))
+        elif kind == "set_heater":
+            power = float(action.get("power_w", action.get("power", 0.0)))
+            self.params["heater_power_w"] = power
+            self.params["heater_power"] = power
+        elif kind in {"set_inlet_temperature", "set_inlet_temp"}:
+            self.params["inlet_temp_c"] = float(action.get("temperature_c", action.get("inlet_temp_c", self.params.get("inlet_temp_c", 12.0))))
+        elif kind in {"set_biofilter", "toggle_biofilter"}:
+            self.params["biofilter_on"] = bool(action.get("enabled", True))
+        elif kind == "set_stock":
+            self.params["fish_count"] = max(0.0, float(action.get("fish_count", action.get("n", 0.0))))
+            self.params["fish_weight_kg"] = max(1e-9, float(action.get("fish_weight_kg", action.get("w_kg", 1.0))))
+        elif kind in {"set_inlet_salinity", "set_salinity_in"}:
+            self.params["salinity_in_ppt"] = max(0.0, float(action.get("salinity_ppt", action.get("ppt", 0.0))))
+        elif kind in {"set_inlet_turbidity", "set_turbidity_in"}:
+            self.params["turbidity_in_ntu"] = max(0.0, float(action.get("turbidity_ntu", action.get("ntu", 0.0))))
+        elif kind == "set_inlet_do":
+            self.params["do_in"] = max(0.0, float(action.get("dissolved_oxygen_mg_l", action.get("do_mg_l", 0.0))))
+        elif kind == "set_inlet_alkalinity":
+            self.params["alk_in"] = max(0.0, float(action.get("alkalinity_mg_l_as_caco3", action.get("alk_mg_l", 0.0))))
+        elif kind == "set_inlet_tan":
+            self.params["tan_in_mg_l"] = max(0.0, float(action.get("tan_mg_l", 0.0)))
+        elif kind in {"set_aeration", "set_kla_o2"}:
+            self.params["kla_o2_h"] = max(0.0, float(action.get("kla_o2_h", action.get("value", 0.0))))
+        elif kind in {"set_co2_stripping", "set_kla_co2"}:
+            self.params["kla_co2_h"] = max(0.0, float(action.get("kla_co2_h", action.get("value", 0.0))))
+        elif kind == "set_biofilter_capacity":
+            self.params["vtr_max_mg_l_h"] = max(0.0, float(action.get("vtr_max_mg_l_h", action.get("value", 0.0))))
+        elif kind == "set_nitrification_rate":
+            self.params["k_nitrif_h"] = max(0.0, float(action.get("k_nitrif_h", action.get("value", 0.0))))
+        elif kind in {"set_solids_removal", "set_mechanical_filter"}:
+            if "enabled" in action:
+                self.params["turbidity_settle_h"] = float(action.get("settle_h", 0.35)) if bool(action.get("enabled")) else 0.0
+            else:
+                self.params["turbidity_settle_h"] = max(0.0, float(action.get("turbidity_settle_h", action.get("settle_h", 0.0))))
+        elif kind == "dose_alkalinity":
+            self.state.alkalinity_mg_l_as_caco3 = max(0.0, self.state.alkalinity_mg_l_as_caco3 + float(action.get("mg_l_as_caco3", action.get("delta_mg_l", 0.0))))
+        elif kind == "dose_salt":
+            self.state.salinity_ppt = max(0.0, self.state.salinity_ppt + float(action.get("ppt", action.get("delta_ppt", 0.0))))
+        elif kind == "add_turbidity":
+            self.state.turbidity_ntu = max(0.0, self.state.turbidity_ntu + float(action.get("ntu", action.get("delta_ntu", 0.0))))
+        elif kind == "oxygen_boost":
+            self.state.dissolved_oxygen_mg_l = max(0.0, self.state.dissolved_oxygen_mg_l + float(action.get("mg_l", action.get("delta_mg_l", 0.0))))
+        elif kind == "co2_pulse":
+            self.state.co2_mg_l = max(0.0, self.state.co2_mg_l + float(action.get("mg_l", action.get("delta_mg_l", 0.0))))
+        elif kind == "load_scenario":
+            if not self.load_scenario(str(action.get("name", "baseline"))):
+                raise ValueError(f"unknown scenario: {action.get('name')}")
+        else:
+            raise ValueError(f"unknown action type: {kind}")
 
     def _state_from_initial(self, initial: Mapping[str, Any]) -> WaterQualityState:
         return WaterQualityState(
@@ -501,6 +614,8 @@ class WaterQualityModel:
             tan_mg_l=float(initial.get("tan_mg_l", 0.3)),
             co2_mg_l=float(initial.get("co2_mg_l", 5.0)),
             alkalinity_mg_l_as_caco3=float(initial.get("alkalinity_mg_l_as_caco3", initial.get("alk_mg_l", 120.0))),
+            salinity_ppt=float(initial.get("salinity_ppt", initial.get("salinity", 0.2))),
+            turbidity_ntu=float(initial.get("turbidity_ntu", initial.get("turbidity", 2.0))),
             feed_pool_kg=float(initial.get("feed_pool_kg", 0.0)),
             sim_time_h=float(initial.get("sim_time_h", 0.0)),
         )
@@ -523,8 +638,11 @@ class WaterQualityModel:
             "do_maxFI": 7.0,
             "do_zero": 3.0,
             "do_in": 9.0,
+            "tan_in_mg_l": 0.0,
             "co2_eq": 0.5,
             "alk_in": 120.0,
+            "salinity_in_ppt": 0.2,
+            "turbidity_in_ntu": 1.0,
             "biofilter_on": True,
             "inflow_enabled": True,
             "time_scale": 1.0,
@@ -534,6 +652,11 @@ class WaterQualityModel:
             "alk_per_tan": 7.14,
             "o2_per_tan": 4.57,
             "o2_per_feed": 0.225,
+            "solids_per_feed": 0.275,
+            "fish_tan_mg_kg_h": 2.5,
+            "fish_tss_mg_kg_h": 1.5,
+            "turbidity_ntu_per_mg_l_tss": 0.35,
+            "turbidity_settle_h": 0.35,
             "mo2_a": 83.0,
             "mo2_w_exp": -0.14,
             "mo2_q10": 2.5,
@@ -569,11 +692,11 @@ class WaterQualityModel:
 
     def _sensor_factors(self, sensor_name: str) -> dict[str, float]:
         return {
-            "inlet_reference": {"tan": 0.72, "dissolved_oxygen": 1.08, "co2": 0.72, "temperature_offset_c": -0.12},
-            "feed_zone_tan": {"tan": 1.45, "dissolved_oxygen": 0.90, "co2": 1.18, "ph_offset": -0.03},
-            "fish_core_do": {"tan": 1.05, "dissolved_oxygen": 0.84, "co2": 1.16, "ph_offset": -0.02},
-            "bottom_co2": {"tan": 1.08, "dissolved_oxygen": 0.88, "co2": 1.36, "ph_offset": -0.06},
-            "biofilter_sentinel": {"tan": 0.62, "dissolved_oxygen": 0.96, "co2": 1.02},
+            "inlet_reference": {"tan": 0.72, "dissolved_oxygen": 1.08, "co2": 0.72, "temperature_offset_c": -0.12, "turbidity": 0.72},
+            "feed_zone_tan": {"tan": 1.45, "dissolved_oxygen": 0.90, "co2": 1.18, "turbidity": 1.28, "ph_offset": -0.03},
+            "fish_core_do": {"tan": 1.05, "dissolved_oxygen": 0.84, "co2": 1.16, "turbidity": 1.08, "ph_offset": -0.02},
+            "bottom_co2": {"tan": 1.08, "dissolved_oxygen": 0.88, "co2": 1.36, "turbidity": 1.18, "ph_offset": -0.06},
+            "biofilter_sentinel": {"tan": 0.62, "dissolved_oxygen": 0.96, "co2": 1.02, "turbidity": 0.82},
             "mixed_tank_outlet": {},
         }.get(sensor_name, {})
 

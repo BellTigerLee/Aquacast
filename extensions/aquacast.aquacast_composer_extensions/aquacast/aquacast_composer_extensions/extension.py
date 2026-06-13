@@ -128,6 +128,96 @@ async def _load_layout(layout_file: str, keep_windows_open=False):
 
 class CreateSetupExtension(omni.ext.IExt):
     """Create Final Configuration"""
+    _WQ_SENSOR_ROWS = (
+        ("temperature_c", "Temp"),
+        ("dissolved_oxygen_mg_l", "DO"),
+        ("tan_mg_l", "TAN"),
+        ("co2_mg_l", "CO2"),
+        ("alkalinity_mg_l_as_caco3", "Alk"),
+        ("salinity_ppt", "Salinity"),
+        ("turbidity_ntu", "Turbidity"),
+        ("ph", "pH"),
+        ("nh3_mg_l", "NH3"),
+        ("nitrite_mg_l", "Nitrite"),
+        ("nitrate_mg_l", "Nitrate"),
+        ("fish_count", "Fish"),
+        ("fish_weight_kg", "Mean kg"),
+        ("biomass_kg", "Biomass"),
+        ("fish_o2_mg_h", "Fish O2"),
+        ("fish_tan_kg_h", "Fish TAN"),
+        ("total_tan_kg_h", "Total TAN"),
+    )
+    _WQ_SENSOR_FIELD_KEYS = {
+        "total": tuple(key for key, _label in _WQ_SENSOR_ROWS),
+        "inlet_reference": ("alkalinity_mg_l_as_caco3", "salinity_ppt", "turbidity_ntu"),
+        "feed_zone_tan": ("tan_mg_l", "nh3_mg_l"),
+        "fish_core_do": ("temperature_c", "ph"),
+        "bottom_co2": ("co2_mg_l",),
+        "biofilter_sentinel": ("nitrite_mg_l", "nitrate_mg_l"),
+        "mixed_tank_outlet": ("dissolved_oxygen_mg_l",),
+    }
+    _WQ_ACTUATOR_ROWS = (
+        ("inlet_enabled", "Inlet"),
+        ("outlet_enabled", "Outlet"),
+        ("biofilter_on", "Biofilter"),
+        ("mechanical_filter_on", "Mech"),
+        ("heater_on", "Heater"),
+    )
+    _WQ_STATUS_DOT_STYLES = {
+        "on": {"background_color": 0xFF00C853, "border_radius": 6},
+        "off": {"background_color": 0xFFE53935, "border_radius": 6},
+        "unknown": {"background_color": 0xFF808080, "border_radius": 6},
+    }
+    _METRIC_DASHBOARD_SPECS = (
+        {
+            "key": "dissolved_oxygen_mg_l",
+            "label": "Dissolved Oxygen",
+            "short": "DO",
+            "unit": "mg/L",
+            "default_threshold": 8.0,
+            "mode": "min",
+            "range": (0.0, 12.0),
+            "min_span": 0.5,
+            "color": 0xFF4EA7FF,
+        },
+        {
+            "key": "tan_mg_l",
+            "label": "Total Ammonia Nitrogen",
+            "short": "TAN",
+            "unit": "mg/L",
+            "default_threshold": 2.0,
+            "mode": "max",
+            "range": (0.0, 3.0),
+            "min_span": 0.05,
+            "color": 0xFFFFB74D,
+        },
+        {
+            "key": "ph",
+            "label": "pH",
+            "short": "pH",
+            "unit": "",
+            "default_threshold": 8.5,
+            "mode": "max",
+            "range": (5.0, 10.0),
+            "min_span": 0.2,
+            "color": 0xFFBA68C8,
+        },
+        {
+            "key": "co2_mg_l",
+            "label": "Carbon Dioxide",
+            "short": "CO2",
+            "unit": "mg/L",
+            "default_threshold": 15.0,
+            "mode": "max",
+            "range": (0.0, 25.0),
+            "min_span": 0.5,
+            "color": 0xFF81C784,
+        },
+    )
+    _METRIC_DASHBOARD_THRESHOLD_COLOR = 0xFFE53935
+    _METRIC_DASHBOARD_BACKGROUND_COLOR = 0xFF111820
+    _METRIC_DASHBOARD_GRID_COLOR = 0xFF263241
+
     def on_startup(self, _ext_id):
         """
         setup the window layout, menu, final configuration
@@ -154,10 +244,54 @@ class CreateSetupExtension(omni.ext.IExt):
         self._sensor_samples_label = None
         self._sensor_path_label = None
         self._sensor_value_labels = {}
+        self._sensor_value_rows = {}
+        self._sensor_actuator_dots = {}
+        self._sensor_tanks = []
+        self._sensor_tank_labels = []
+        self._sensor_tank_combo = None
+        self._sensor_tank_index = 0
+        self._sensor_names = []
+        self._sensor_name_labels = []
+        self._sensor_name_combo = None
+        self._sensor_name_index = 0
+        self._sensor_combo_change_subs = []
         self._sensor_menu_items = []
         self._wq_view_window = None
         self._wq_view_label = None
         self._wq_view_menu_items = []
+        self._control_window = None
+        self._control_menu_items = []
+        self._control_tanks = []
+        self._control_tank_labels = []
+        self._control_tank_combo = None
+        self._control_tank_index = 0
+        self._control_fields = {}
+        self._control_status_label = None
+        self._control_rebuild_requested = False
+        self._actuator_window = None
+        self._actuator_update_sub = None
+        self._actuator_menu_items = []
+        self._actuator_last_update = 0.0
+        self._actuator_status_label = None
+        self._actuator_tanks = []
+        self._actuator_tank_labels = []
+        self._actuator_tank_dot_sets = {}
+        self._metrics_window = None
+        self._metrics_update_sub = None
+        self._metrics_menu_items = []
+        self._metrics_last_update = 0.0
+        self._metrics_tanks = []
+        self._metrics_tank_labels = []
+        self._metrics_tank_combo = None
+        self._metrics_tank_index = 0
+        self._metrics_status_label = None
+        self._metrics_chart_frames = {}
+        self._metrics_current_labels = {}
+        self._metrics_range_labels = {}
+        self._metrics_state_frames = {}
+        self._metrics_threshold_fields = {}
+        self._metrics_history = {}
+        self._metrics_thresholds = self._default_metric_thresholds()
         self._fish_window = None
         self._fish_update_sub = None
         self._fish_last_update = 0.0
@@ -303,6 +437,9 @@ class CreateSetupExtension(omni.ext.IExt):
         self._register_aquacast_menu()
         self._create_sensor_window()
         self._create_wq_view_window()
+        self._create_control_window()
+        self._create_actuator_window()
+        self._create_metrics_dashboard_window()
         self._create_fish_window()
 
         startup_time = \
@@ -456,31 +593,11 @@ class CreateSetupExtension(omni.ext.IExt):
 
         quality_enabled = bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False)))
         title = "Aquacast Water Quality Sensor" if quality_enabled else "Aquacast Temperature Sensor"
-        self._sensor_window = ui.Window(title, width=430, height=310, visible=True)
-        with self._sensor_window.frame:
-            with ui.VStack(spacing=6):
-                ui.Label("Water Quality Sensor" if quality_enabled else "Temperature Sensor", height=22)
-                self._sensor_status_label = ui.Label("Waiting for particles", height=20)
-                self._sensor_value_labels = {}
-                rows = [
-                    ("temperature_c", "Temp"),
-                    ("dissolved_oxygen_mg_l", "DO"),
-                    ("tan_mg_l", "TAN"),
-                    ("co2_mg_l", "CO2"),
-                    ("alkalinity_mg_l_as_caco3", "Alk"),
-                    ("ph", "pH"),
-                    ("nh3_mg_l", "NH3"),
-                ] if quality_enabled else [
-                    ("average_c", "Average"),
-                    ("range_c", "Range"),
-                    ("sample_count", "Samples"),
-                ]
-                for key, label in rows:
-                    with ui.HStack(height=20):
-                        ui.Label(label, width=105)
-                        value_label = ui.Label("--")
-                        self._sensor_value_labels[key] = value_label
-                self._sensor_path_label = ui.Label("Sensor: --", height=42, word_wrap=True)
+        self._sensor_window = ui.Window(title, width=500, height=450 if quality_enabled else 310, visible=True)
+        self._sensor_tanks, self._sensor_tank_labels = self._sensor_tank_window_data()
+        self._sensor_names = self._sensor_name_window_data() if quality_enabled else []
+        self._sensor_name_labels = [self._sensor_label_for_name(name) for name in self._sensor_names]
+        self._build_sensor_window_contents(quality_enabled)
 
         self._sensor_update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
             self._on_sensor_ui_update,
@@ -488,6 +605,73 @@ class CreateSetupExtension(omni.ext.IExt):
         )
         self._register_sensor_window_menu()
         self._on_sensor_ui_update(None)
+
+    def _build_sensor_window_contents(self, quality_enabled):
+        if self._sensor_window is None:
+            return
+        self._sensor_combo_change_subs = []
+        with self._sensor_window.frame:
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=6):
+                    ui.Label("Water Quality Sensor" if quality_enabled else "Temperature Sensor", height=22)
+                    if quality_enabled:
+                        with ui.HStack(height=26, spacing=6):
+                            ui.Label("Tank:", width=70)
+                            self._sensor_tank_index = self._clamp_index(self._sensor_tank_index, self._sensor_tank_labels)
+                            self._sensor_tank_combo = ui.ComboBox(self._sensor_tank_index, *(self._sensor_tank_labels or ["(no tanks)"]))
+                            self._bind_sensor_combo(self._sensor_tank_combo, "_sensor_tank_index")
+                        with ui.HStack(height=26, spacing=6):
+                            ui.Label("Sensor:", width=70)
+                            self._sensor_name_index = self._clamp_index(self._sensor_name_index, self._sensor_names)
+                            self._sensor_name_combo = ui.ComboBox(self._sensor_name_index, *(self._sensor_name_labels or ["mixed_tank_outlet"]))
+                            self._bind_sensor_combo(self._sensor_name_combo, "_sensor_name_index")
+                    self._sensor_status_label = ui.Label("Waiting for particles", height=20)
+                    self._sensor_value_labels = {}
+                    self._sensor_value_rows = {}
+                    rows = list(self._WQ_SENSOR_ROWS) if quality_enabled else [
+                        ("average_c", "Average"),
+                        ("range_c", "Range"),
+                        ("sample_count", "Samples"),
+                    ]
+                    for key, label in rows:
+                        row = ui.HStack(height=20)
+                        with row:
+                            ui.Label(label, width=115)
+                            value_label = ui.Label("--")
+                            self._sensor_value_labels[key] = value_label
+                        self._sensor_value_rows[key] = row
+                    if quality_enabled:
+                        self._apply_sensor_row_visibility(self._selected_sensor_name())
+                        self._build_sensor_actuator_rows()
+                    self._sensor_path_label = ui.Label("Sensor: --", height=42, word_wrap=True)
+
+    def _build_sensor_actuator_rows(self):
+        self._sensor_actuator_dots = {}
+        ui.Label("Actuators", height=18)
+        with ui.HStack(height=22, spacing=8):
+            for key, label in self._WQ_ACTUATOR_ROWS:
+                with ui.HStack(width=88, spacing=2):
+                    ui.Label(label, width=68)
+                    self._sensor_actuator_dots[key] = self._build_status_indicator()
+
+    def _build_status_indicator(self, size=12):
+        dots = {}
+        for state in ("on", "off", "unknown"):
+            dot = ui.Rectangle(width=size, height=size, style=self._WQ_STATUS_DOT_STYLES[state])
+            dot.visible = state == "unknown"
+            dots[state] = dot
+        return dots
+
+    def _set_status_indicator(self, dots, value):
+        if value is None:
+            state = "unknown"
+        else:
+            state = "on" if bool(value) else "off"
+        for dot_state, dot in (dots or {}).items():
+            try:
+                dot.visible = dot_state == state
+            except Exception:
+                pass
 
     def _register_sensor_window_menu(self):
         if self._sensor_menu_items:
@@ -507,6 +691,209 @@ class CreateSetupExtension(omni.ext.IExt):
             return
         self._sensor_window.visible = True
 
+    def _sensor_tank_window_data(self):
+        tanks = []
+        if self._aquacast_main is not None:
+            try:
+                tanks = list(self._aquacast_main.list_fish_tanks())
+            except Exception as exc:
+                carb.log_warn(f"[test-Aquacast] Sensor UI tank refresh failed: {exc}")
+        labels = self._unique_sensor_tank_labels(tanks)
+        return tanks, labels
+
+    def _sensor_name_window_data(self):
+        names = []
+        if self._aquacast_main is not None and hasattr(self._aquacast_main, "list_water_quality_sensor_names"):
+            try:
+                names = list(self._aquacast_main.list_water_quality_sensor_names())
+            except Exception as exc:
+                carb.log_warn(f"[test-Aquacast] Sensor UI name refresh failed: {exc}")
+        if not names:
+            names = list(_get_runtime_config("WQ_SENSOR_PRIM_NAMES", []) or [])
+        sensor_names = [str(name) for name in names]
+        return ["total"] + [name for name in sensor_names if name != "total"] or ["total", "mixed_tank_outlet"]
+
+    def _sensor_tank_label(self, path):
+        path = str(path or "")
+        parts = [part for part in path.strip("/").split("/") if part]
+        if not parts:
+            return path
+        candidates = parts[:-1] if parts[-1] == "Water" else parts
+        generic = {"Root", "scene", "Meshes", "Model", "Components", "Component", "Water"}
+        for part in reversed(candidates):
+            if part in generic:
+                continue
+            if part.startswith("Group") and part[5:].isdigit():
+                continue
+            return part
+        return candidates[-1] if candidates else parts[-1]
+
+    def _unique_sensor_tank_labels(self, tanks):
+        raw_labels = [self._sensor_tank_label(path) for path in tanks]
+        counts = {label: raw_labels.count(label) for label in raw_labels}
+        seen = {}
+        labels = []
+        for path, label in zip(tanks, raw_labels):
+            seen[label] = seen.get(label, 0) + 1
+            if counts[label] <= 1:
+                labels.append(label)
+                continue
+            suffix = str(path).rstrip("/").rsplit("/", 3)[0].rsplit("/", 1)[-1]
+            labels.append(f"{label} #{seen[label]} ({suffix})")
+        return labels
+
+    def _sensor_label_for_name(self, name):
+        return {
+            "total": "Total",
+            "inlet_reference": "Inlet reference",
+            "feed_zone_tan": "Feed TAN",
+            "fish_core_do": "Fish core DO",
+            "bottom_co2": "Bottom CO2",
+            "biofilter_sentinel": "Biofilter",
+            "mixed_tank_outlet": "Mixed outlet",
+        }.get(str(name), str(name))
+
+    def _wq_sensor_fields_for_name(self, name):
+        sensor_name = str(name or "")
+        fields = self._WQ_SENSOR_FIELD_KEYS.get(sensor_name)
+        if fields is not None:
+            return tuple(fields)
+        return tuple(key for key, _label in self._WQ_SENSOR_ROWS)
+
+    def _apply_sensor_row_visibility(self, sensor_name):
+        visible_keys = set(self._wq_sensor_fields_for_name(sensor_name))
+        for key, row in self._sensor_value_rows.items():
+            try:
+                row.visible = key in visible_keys
+            except Exception:
+                pass
+            if key not in visible_keys:
+                self._set_sensor_label(key, "--")
+
+    def _format_wq_sensor_value(self, key, reading):
+        value = float(reading.get(key, 0.0))
+        if key == "temperature_c":
+            return f"{value:.2f} C"
+        if key == "dissolved_oxygen_mg_l":
+            return f"{value:.2f} mg/L"
+        if key == "tan_mg_l":
+            return f"{value:.3f} mg/L"
+        if key == "co2_mg_l":
+            return f"{value:.2f} mg/L"
+        if key == "alkalinity_mg_l_as_caco3":
+            return f"{value:.1f} mg/L CaCO3"
+        if key == "salinity_ppt":
+            return f"{value:.2f} ppt"
+        if key == "turbidity_ntu":
+            return f"{value:.1f} NTU"
+        if key == "ph":
+            return f"{value:.2f}"
+        if key in {"nh3_mg_l", "nitrite_mg_l", "nitrate_mg_l"}:
+            return f"{value:.4f} mg/L"
+        if key == "fish_count":
+            return f"{value:.0f}"
+        if key == "fish_weight_kg":
+            return f"{value:.2f} kg"
+        if key == "biomass_kg":
+            return f"{value:.1f} kg"
+        if key == "fish_o2_mg_h":
+            return f"{value:.1f} mg/h"
+        if key in {"fish_tan_kg_h", "total_tan_kg_h"}:
+            return f"{value:.6f} kg/h"
+        return str(reading.get(key, "--"))
+
+    def _update_sensor_actuator_statuses(self, reading):
+        if not self._sensor_actuator_dots:
+            return
+        for key, _label in self._WQ_ACTUATOR_ROWS:
+            self._set_status_indicator(
+                self._sensor_actuator_dots.get(key, {}),
+                reading.get(key) if key in reading else None,
+            )
+
+    def _selected_sensor_tank(self):
+        if not self._sensor_tanks:
+            return None
+        index = self._clamp_index(self._sensor_combo_index(self._sensor_tank_combo, self._sensor_tank_index), self._sensor_tanks)
+        self._sensor_tank_index = index
+        return self._sensor_tanks[index]
+
+    def _selected_sensor_name(self):
+        if not self._sensor_names:
+            return "mixed_tank_outlet"
+        index = self._clamp_index(self._sensor_combo_index(self._sensor_name_combo, self._sensor_name_index), self._sensor_names)
+        self._sensor_name_index = index
+        return self._sensor_names[index]
+
+    def _clamp_index(self, index, items):
+        if not items:
+            return 0
+        try:
+            value = int(index)
+        except Exception:
+            value = 0
+        return max(0, min(value, len(items) - 1))
+
+    def _sensor_combo_index(self, combo, fallback=0):
+        if combo is None:
+            return self._clamp_index(fallback, [None])
+        try:
+            return int(combo.model.get_item_value_model().as_int)
+        except Exception:
+            pass
+        try:
+            return int(combo.model.get_item_value_model().get_value_as_int())
+        except Exception:
+            return int(fallback or 0)
+
+    def _bind_sensor_combo(self, combo, index_attr):
+        try:
+            value_model = combo.model.get_item_value_model()
+            sub = value_model.add_value_changed_fn(
+                lambda *args, attr=index_attr, value_model=value_model: self._on_sensor_combo_changed(
+                    attr,
+                    args[0] if args else value_model,
+                )
+            )
+            self._sensor_combo_change_subs.append(sub)
+        except Exception:
+            pass
+
+    def _on_sensor_combo_changed(self, index_attr, model):
+        try:
+            index = int(model.as_int)
+        except Exception:
+            try:
+                index = int(model.get_value_as_int())
+            except Exception:
+                index = 0
+        setattr(self, index_attr, index)
+        self._sensor_last_update = 0.0
+        try:
+            self._on_sensor_ui_update(None)
+        except Exception as exc:
+            carb.log_warn(f"[test-Aquacast] Sensor UI selection update failed: {exc}")
+
+    def _refresh_sensor_selector_data(self):
+        quality_enabled = bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False)))
+        if not quality_enabled:
+            return
+        selected_tank = self._selected_sensor_tank()
+        selected_name = self._selected_sensor_name()
+        tanks, labels = self._sensor_tank_window_data()
+        names = self._sensor_name_window_data()
+        name_labels = [self._sensor_label_for_name(name) for name in names]
+        if tanks != self._sensor_tanks or labels != self._sensor_tank_labels or names != self._sensor_names:
+            self._sensor_tank_index = tanks.index(selected_tank) if selected_tank in tanks else self._clamp_index(self._sensor_tank_index, tanks)
+            self._sensor_name_index = names.index(selected_name) if selected_name in names else self._clamp_index(self._sensor_name_index, names)
+            self._sensor_tanks = tanks
+            self._sensor_tank_labels = labels
+            self._sensor_names = names
+            self._sensor_name_labels = name_labels
+            # ComboBox item lists are fixed after construction in this UI version.
+            # Rebuild the existing frame only when the underlying stage sensor set changes.
+            self._build_sensor_window_contents(quality_enabled)
+
     def _on_sensor_ui_update(self, _event):
         if self._sensor_window is None or self._aquacast_main is None:
             return
@@ -518,8 +905,12 @@ class CreateSetupExtension(omni.ext.IExt):
 
         try:
             quality_enabled = bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False)))
+            self._refresh_sensor_selector_data()
             if quality_enabled and hasattr(self._aquacast_main, "sample_water_quality_sensor"):
-                reading = self._aquacast_main.sample_water_quality_sensor()
+                reading = self._aquacast_main.sample_water_quality_sensor(
+                    self._selected_sensor_name(),
+                    tank_path=self._selected_sensor_tank(),
+                )
             else:
                 reading = self._aquacast_main.sample_water_temp_sensor()
         except Exception as exc:
@@ -531,22 +922,23 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._sensor_status_label.text = status
             for label in self._sensor_value_labels.values():
                 label.text = "--"
+            self._update_sensor_actuator_statuses({})
             if self._sensor_path_label:
                 self._sensor_path_label.text = f"Sensor: {reading.get('sensor_path', '--')}"
             return
 
         if "dissolved_oxygen_mg_l" in reading:
+            sensor_name = str(reading.get("sensor_name") or self._selected_sensor_name())
+            visible_keys = self._wq_sensor_fields_for_name(sensor_name)
+            self._apply_sensor_row_visibility(sensor_name)
             if self._sensor_status_label:
-                self._sensor_status_label.text = str(reading.get("sensor_name", "sensor"))
-            self._set_sensor_label("temperature_c", f"{reading.get('temperature_c', 0.0):.2f} C")
-            self._set_sensor_label("dissolved_oxygen_mg_l", f"{reading.get('dissolved_oxygen_mg_l', 0.0):.2f} mg/L")
-            self._set_sensor_label("tan_mg_l", f"{reading.get('tan_mg_l', 0.0):.3f} mg/L")
-            self._set_sensor_label("co2_mg_l", f"{reading.get('co2_mg_l', 0.0):.2f} mg/L")
-            self._set_sensor_label("alkalinity_mg_l_as_caco3", f"{reading.get('alkalinity_mg_l_as_caco3', 0.0):.1f} mg/L CaCO3")
-            self._set_sensor_label("ph", f"{reading.get('ph', 0.0):.2f}")
-            self._set_sensor_label("nh3_mg_l", f"{reading.get('nh3_mg_l', 0.0):.4f} mg/L")
+                self._sensor_status_label.text = self._sensor_label_for_name(sensor_name)
+            for key in visible_keys:
+                self._set_sensor_label(key, self._format_wq_sensor_value(key, reading))
+            self._update_sensor_actuator_statuses(reading)
             if self._sensor_path_label:
-                self._sensor_path_label.text = f"Sensor: {reading.get('sensor_path', '--')}"
+                tank = reading.get("tank_name") or reading.get("tank_path") or "--"
+                self._sensor_path_label.text = f"Tank: {tank}\nSensor: {reading.get('sensor_path', '--')}"
             return
 
         fallback = " nearest" if reading.get("used_fallback") else ""
@@ -569,20 +961,23 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._wq_view_window is not None:
             return
 
-        self._wq_view_window = ui.Window("Aquacast Water Quality View", width=300, height=190, visible=True)
+        self._wq_view_window = ui.Window("Aquacast Water Quality View", width=300, height=220, visible=True)
         with self._wq_view_window.frame:
-            with ui.VStack(spacing=6):
-                self._wq_view_label = ui.Label("Current: --", height=22)
-                with ui.HStack(height=28, spacing=6):
-                    ui.Button("Temp", clicked_fn=lambda: self._select_wq_view_variable("temperature"))
-                    ui.Button("DO", clicked_fn=lambda: self._select_wq_view_variable("dissolved_oxygen"))
-                    ui.Button("TAN", clicked_fn=lambda: self._select_wq_view_variable("tan"))
-                with ui.HStack(height=28, spacing=6):
-                    ui.Button("CO2", clicked_fn=lambda: self._select_wq_view_variable("co2"))
-                    ui.Button("pH", clicked_fn=lambda: self._select_wq_view_variable("ph"))
-                    ui.Button("Alk", clicked_fn=lambda: self._select_wq_view_variable("alkalinity"))
-                with ui.HStack(height=28, spacing=6):
-                    ui.Button("NH3", clicked_fn=lambda: self._select_wq_view_variable("nh3"))
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=6):
+                    self._wq_view_label = ui.Label("Current: --", height=22)
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Button("Temp", clicked_fn=lambda: self._select_wq_view_variable("temperature"))
+                        ui.Button("DO", clicked_fn=lambda: self._select_wq_view_variable("dissolved_oxygen"))
+                        ui.Button("TAN", clicked_fn=lambda: self._select_wq_view_variable("tan"))
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Button("CO2", clicked_fn=lambda: self._select_wq_view_variable("co2"))
+                        ui.Button("pH", clicked_fn=lambda: self._select_wq_view_variable("ph"))
+                        ui.Button("Alk", clicked_fn=lambda: self._select_wq_view_variable("alkalinity"))
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Button("NH3", clicked_fn=lambda: self._select_wq_view_variable("nh3"))
+                        ui.Button("Sal", clicked_fn=lambda: self._select_wq_view_variable("salinity"))
+                        ui.Button("Turb", clicked_fn=lambda: self._select_wq_view_variable("turbidity"))
 
         self._register_wq_view_window_menu()
         self._refresh_wq_view_label()
@@ -628,9 +1023,706 @@ class CreateSetupExtension(omni.ext.IExt):
             "co2": "CO2",
             "ph": "pH",
             "alkalinity": "Alkalinity",
+            "salinity": "Salinity",
+            "turbidity": "Turbidity",
             "nh3": "NH3",
         }.get(str(variable or ""), str(variable or "--"))
         self._wq_view_label.text = f"Current: {label}"
+
+
+    def _create_control_window(self):
+        if not bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False))):
+            return
+        if self._aquacast_main is None:
+            return
+        if self._control_window is not None:
+            return
+
+        self._control_window = ui.Window("Aquacast Tank Controls", width=500, height=560, visible=True)
+        self._refresh_control_tank_data()
+        self._build_control_window_contents()
+        self._register_control_window_menu()
+
+    def _register_control_window_menu(self):
+        if self._control_menu_items:
+            return
+        self._control_menu_items = [
+            MenuItemDescription(
+                name="Aquacast/Tank Controls",
+                onclick_fn=self._show_control_window,
+            )
+        ]
+        omni.kit.menu.utils.add_menu_items(self._control_menu_items, name="Window")
+
+    def _show_control_window(self):
+        if self._control_window is None:
+            self._create_control_window()
+            return
+        self._control_window.visible = True
+        self._refresh_control_tank_data(rebuild=True)
+
+    def _refresh_control_tank_data(self, rebuild=False):
+        previous = self._selected_control_tank()
+        self._control_tanks, self._control_tank_labels = self._sensor_tank_window_data()
+        if previous in self._control_tanks:
+            self._control_tank_index = self._control_tanks.index(previous)
+        else:
+            self._control_tank_index = self._clamp_index(self._control_tank_index, self._control_tanks)
+        if rebuild and self._control_window is not None:
+            self._schedule_control_rebuild()
+
+    def _schedule_control_rebuild(self):
+        if self._control_rebuild_requested:
+            return
+        self._control_rebuild_requested = True
+        asyncio.ensure_future(self._rebuild_control_window_next_update())
+
+    async def _rebuild_control_window_next_update(self):
+        try:
+            await omni.kit.app.get_app().next_update_async()
+            if self._control_window is not None:
+                previous_rebuild = self._control_rebuild_requested
+                self._control_rebuild_requested = False
+                self._refresh_control_tank_data(rebuild=False)
+                self._build_control_window_contents()
+                self._control_rebuild_requested = False if previous_rebuild else self._control_rebuild_requested
+        finally:
+            self._control_rebuild_requested = False
+
+    def _build_control_window_contents(self):
+        if self._control_window is None:
+            return
+        self._control_fields = {}
+        with self._control_window.frame:
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=7):
+                    ui.Label("Tank Controls", height=22)
+                    with ui.HStack(height=26, spacing=6):
+                        ui.Label("Tank:", width=85)
+                        self._control_tank_index = self._clamp_index(self._control_tank_index, self._control_tank_labels)
+                        self._control_tank_combo = ui.ComboBox(self._control_tank_index, *(self._control_tank_labels or ["(no tanks)"]))
+                        ui.Button("Refresh", width=80, clicked_fn=lambda: self._refresh_control_tank_data(rebuild=True))
+
+                    self._control_status_label = ui.Label("Ready", height=38, word_wrap=True)
+
+                    ui.Label("Thermal", height=20)
+                    self._control_float_row("temperature_c", "Set Temp C", 14.0, "Apply", lambda: self._control_action("set_temperature", temperature_c=self._control_float("temperature_c", 14.0)))
+                    self._control_float_row("heater_w", "Heater W", 0.0, "Apply", lambda: self._control_action("set_heater", power_w=self._control_float("heater_w", 0.0)))
+                    self._control_float_row("inlet_temp_c", "Inlet Temp C", 12.0, "Apply", lambda: self._control_action("set_inlet_temperature", temperature_c=self._control_float("inlet_temp_c", 12.0)))
+
+                    ui.Label("Feeding / Stock", height=20)
+                    self._control_float_row("feed_kg", "Feed kg", 1.0, "Pulse", lambda: self._control_action("feed", mass_kg=self._control_float("feed_kg", 1.0)))
+                    with ui.HStack(height=26, spacing=6):
+                        ui.Label("Stock", width=85)
+                        self._control_fields["fish_count"] = ui.FloatField(width=95)
+                        self._set_control_float("fish_count", 200.0)
+                        ui.Label("fish", width=32)
+                        self._control_fields["fish_weight_kg"] = ui.FloatField(width=95)
+                        self._set_control_float("fish_weight_kg", 1.0)
+                        ui.Label("kg", width=22)
+                        ui.Button("Apply", width=70, clicked_fn=lambda: self._control_action(
+                            "set_stock",
+                            fish_count=self._control_float("fish_count", 200.0),
+                            fish_weight_kg=self._control_float("fish_weight_kg", 1.0),
+                        ))
+
+                    ui.Label("Water Exchange / Inlet", height=20)
+                    self._control_float_row("flow_lph", "Flow L/h", 2000.0, "Apply", lambda: self._control_action("set_water_exchange", q_lph=self._control_float("flow_lph", 2000.0)))
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Label("Inflow", width=85)
+                        ui.Button("ON", clicked_fn=lambda: self._control_action("set_inflow", enabled=True))
+                        ui.Button("OFF", clicked_fn=lambda: self._control_action("set_inflow", enabled=False))
+                    self._control_float_row("salinity_ppt", "Inlet Sal ppt", 0.2, "Apply", lambda: self._control_action("set_inlet_salinity", salinity_ppt=self._control_float("salinity_ppt", 0.2)))
+                    self._control_float_row("turbidity_ntu", "Inlet Turb NTU", 1.0, "Apply", lambda: self._control_action("set_inlet_turbidity", turbidity_ntu=self._control_float("turbidity_ntu", 1.0)))
+                    self._control_float_row("inlet_do", "Inlet DO", 9.0, "Apply", lambda: self._control_action("set_inlet_do", dissolved_oxygen_mg_l=self._control_float("inlet_do", 9.0)))
+                    self._control_float_row("inlet_alk", "Inlet Alk", 120.0, "Apply", lambda: self._control_action("set_inlet_alkalinity", alkalinity_mg_l_as_caco3=self._control_float("inlet_alk", 120.0)))
+
+                    ui.Label("Filtration / Emergency", height=20)
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Label("Biofilter", width=85)
+                        ui.Button("ON", clicked_fn=lambda: self._control_action("set_biofilter", enabled=True))
+                        ui.Button("OFF", clicked_fn=lambda: self._control_action("set_biofilter", enabled=False))
+                        ui.Label("Mech", width=40)
+                        ui.Button("ON", clicked_fn=lambda: self._control_action("set_mechanical_filter", enabled=True, settle_h=0.35))
+                        ui.Button("OFF", clicked_fn=lambda: self._control_action("set_mechanical_filter", enabled=False))
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Button("O2 +1", clicked_fn=lambda: self._control_action("oxygen_boost", mg_l=1.0))
+                        ui.Button("CO2 +2", clicked_fn=lambda: self._control_action("co2_pulse", mg_l=2.0))
+                        ui.Button("Salt +0.3", clicked_fn=lambda: self._control_action("dose_salt", ppt=0.3))
+                        ui.Button("Turb +5", clicked_fn=lambda: self._control_action("add_turbidity", ntu=5.0))
+
+                    ui.Label("Scenarios", height=20)
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Button("Baseline", clicked_fn=lambda: self._control_action("load_scenario", name="baseline"))
+                        ui.Button("Overfeed", clicked_fn=lambda: self._control_action("load_scenario", name="overfeed"))
+                        ui.Button("Pump Off", clicked_fn=lambda: self._control_action("load_scenario", name="pump_off"))
+                        ui.Button("Biofilter Off", clicked_fn=lambda: self._control_action("load_scenario", name="biofilter_off"))
+
+    def _control_float_row(self, key, label, default, button_label, clicked_fn):
+        with ui.HStack(height=26, spacing=6):
+            ui.Label(label, width=120)
+            self._control_fields[key] = ui.FloatField(width=120)
+            self._set_control_float(key, default)
+            ui.Button(button_label, width=80, clicked_fn=clicked_fn)
+
+    def _set_control_float(self, key, value):
+        field = self._control_fields.get(key)
+        if field is None:
+            return
+        try:
+            field.model.set_value(float(value))
+        except Exception:
+            pass
+
+    def _control_float(self, key, default=0.0):
+        field = self._control_fields.get(key)
+        if field is None:
+            return float(default)
+        try:
+            return float(field.model.as_float)
+        except Exception:
+            pass
+        try:
+            return float(field.model.get_value_as_float())
+        except Exception:
+            return float(default)
+
+    def _selected_control_tank(self):
+        if not self._control_tanks:
+            return None
+        index = self._clamp_index(self._fish_combo_index(self._control_tank_combo), self._control_tanks)
+        self._control_tank_index = index
+        return self._control_tanks[index]
+
+    def _control_action(self, action, **params):
+        if self._aquacast_main is None or not hasattr(self._aquacast_main, "execute_water_quality_action"):
+            self._set_control_status("action API unavailable")
+            return
+        tank = self._selected_control_tank()
+        try:
+            result = self._aquacast_main.execute_water_quality_action(action, tank_path=tank, **params)
+        except Exception as exc:
+            self._set_control_status(f"{action} failed: {exc}")
+            return
+        status = result.get("status", "unknown") if isinstance(result, dict) else "unknown"
+        if status == "ok":
+            detail = f"{action} applied"
+            if tank:
+                detail += f" -> {self._sensor_tank_label(tank)}"
+            if isinstance(result, dict):
+                parts = []
+                if "temperature_c" in result:
+                    parts.append(f"T={float(result.get('temperature_c', 0.0)):.2f}C")
+                if "dissolved_oxygen_mg_l" in result:
+                    parts.append(f"DO={float(result.get('dissolved_oxygen_mg_l', 0.0)):.2f}")
+                if "ph" in result:
+                    parts.append(f"pH={float(result.get('ph', 0.0)):.2f}")
+                if parts:
+                    detail += " | " + ", ".join(parts)
+            self._set_control_status(detail)
+            try:
+                self._on_sensor_ui_update(None)
+            except Exception:
+                pass
+            try:
+                self._on_actuator_ui_update(None, force=True)
+            except Exception:
+                pass
+        else:
+            error = result.get("error", status) if isinstance(result, dict) else status
+            self._set_control_status(f"{action} failed: {error}")
+
+    def _set_control_status(self, text):
+        if self._control_status_label is not None:
+            self._control_status_label.text = str(text)
+
+
+    def _create_actuator_window(self):
+        if not bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False))):
+            return
+        if self._aquacast_main is None:
+            return
+        if self._actuator_window is not None:
+            return
+
+        self._actuator_window = ui.Window("Aquacast Actuator Overview", width=560, height=360, visible=True)
+        self._refresh_actuator_tank_data()
+        self._build_actuator_window_contents()
+        self._register_actuator_window_menu()
+        self._actuator_update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+            self._on_actuator_ui_update,
+            name="aquacast_actuator_overview_ui",
+        )
+        self._on_actuator_ui_update(None, force=True)
+
+    def _register_actuator_window_menu(self):
+        if self._actuator_menu_items:
+            return
+        self._actuator_menu_items = [
+            MenuItemDescription(
+                name="Aquacast/Actuator Overview",
+                onclick_fn=self._show_actuator_window,
+            )
+        ]
+        omni.kit.menu.utils.add_menu_items(self._actuator_menu_items, name="Window")
+
+    def _show_actuator_window(self):
+        if self._actuator_window is None:
+            self._create_actuator_window()
+            return
+        self._actuator_window.visible = True
+        self._on_actuator_ui_update(None, force=True)
+
+    def _refresh_actuator_tank_data(self):
+        self._actuator_tanks, self._actuator_tank_labels = self._sensor_tank_window_data()
+
+    def _build_actuator_window_contents(self):
+        if self._actuator_window is None:
+            return
+        self._actuator_tank_dot_sets = {}
+        with self._actuator_window.frame:
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=8):
+                    ui.Label("Actuator Overview", height=22)
+                    self._actuator_status_label = ui.Label("Waiting for tank state", height=22)
+                    if not self._actuator_tanks:
+                        ui.Label("No tanks found", height=24)
+                        return
+                    for tank_path, tank_label in zip(self._actuator_tanks, self._actuator_tank_labels):
+                        with ui.VStack(height=72, spacing=4):
+                            ui.Label(str(tank_label), height=18)
+                            with ui.HStack(height=42, spacing=10):
+                                tank_dots = {}
+                                for key, label in self._WQ_ACTUATOR_ROWS:
+                                    with ui.VStack(width=88, spacing=2):
+                                        with ui.HStack(height=16):
+                                            ui.Label("", width=34)
+                                            dots = self._build_status_indicator(size=14)
+                                        ui.Label(label, height=18, alignment=ui.Alignment.CENTER)
+                                    tank_dots[key] = dots
+                                self._actuator_tank_dot_sets[tank_path] = tank_dots
+
+    def _on_actuator_ui_update(self, _event, force=False):
+        if self._actuator_window is None or self._aquacast_main is None:
+            return
+        now = time.monotonic()
+        interval = float(_get_runtime_config("TEMP_SENSOR_UPDATE_INTERVAL_SECONDS", 0.5) or 0.5)
+        if not force and now - self._actuator_last_update < max(0.05, interval):
+            return
+        self._actuator_last_update = now
+
+        previous_tanks = list(self._actuator_tanks)
+        self._refresh_actuator_tank_data()
+        if previous_tanks != self._actuator_tanks or not self._actuator_tank_dot_sets:
+            self._build_actuator_window_contents()
+
+        failures = 0
+        for tank_path in self._actuator_tanks:
+            try:
+                snapshot = self._aquacast_main.get_quality_snapshot(tank_path=tank_path)
+            except Exception:
+                snapshot = {}
+            if snapshot.get("status") != "ok":
+                failures += 1
+                snapshot = {}
+            for key, _label in self._WQ_ACTUATOR_ROWS:
+                self._set_status_indicator(
+                    self._actuator_tank_dot_sets.get(tank_path, {}).get(key, {}),
+                    snapshot.get(key) if key in snapshot else None,
+                )
+        if self._actuator_status_label is not None:
+            if not self._actuator_tanks:
+                self._actuator_status_label.text = "No tanks found"
+            elif failures:
+                self._actuator_status_label.text = f"{failures} tank state read failed"
+            else:
+                self._actuator_status_label.text = f"{len(self._actuator_tanks)} tank(s)"
+
+
+    def _default_metric_thresholds(self):
+        configured = _get_runtime_config("WQ_METRIC_DASHBOARD_THRESHOLDS", {}) or {}
+        thresholds = {}
+        for spec in self._METRIC_DASHBOARD_SPECS:
+            key = spec["key"]
+            item = configured.get(key, {}) if isinstance(configured, dict) else {}
+            if not isinstance(item, dict):
+                item = {"value": item}
+            try:
+                value = float(item.get("value", spec["default_threshold"]))
+            except (TypeError, ValueError):
+                value = float(spec["default_threshold"])
+            mode = str(item.get("mode", spec["mode"])).strip().lower()
+            if mode not in {"min", "max"}:
+                mode = str(spec["mode"])
+            thresholds[key] = {"value": value, "mode": mode}
+        return thresholds
+
+    def _normalize_metric_thresholds(self, thresholds):
+        raw = thresholds.get("thresholds") if isinstance(thresholds, dict) and "thresholds" in thresholds else thresholds
+        raw = raw if isinstance(raw, dict) else {}
+        values = self._default_metric_thresholds()
+        for spec in self._METRIC_DASHBOARD_SPECS:
+            key = spec["key"]
+            item = raw.get(key, values[key])
+            if not isinstance(item, dict):
+                item = {"value": item, "mode": values[key].get("mode", spec["mode"])}
+            try:
+                value = float(item.get("value", values[key]["value"]))
+            except (TypeError, ValueError):
+                value = float(values[key]["value"])
+            mode = str(item.get("mode", values[key].get("mode", spec["mode"]))).strip().lower()
+            if mode not in {"min", "max"}:
+                mode = str(spec["mode"])
+            values[key] = {"value": value, "mode": mode}
+        return values
+
+    def _dashboard_metric_specs(self):
+        configured = _get_runtime_config(
+            "WQ_METRICS_DASHBOARD_METRICS",
+            [spec["key"] for spec in self._METRIC_DASHBOARD_SPECS],
+        )
+        configured_keys = {str(key) for key in configured} if isinstance(configured, (list, tuple, set)) else set()
+        specs = [spec for spec in self._METRIC_DASHBOARD_SPECS if not configured_keys or spec["key"] in configured_keys]
+        return specs or list(self._METRIC_DASHBOARD_SPECS)
+
+    def _load_metric_thresholds(self):
+        if self._aquacast_main and hasattr(self._aquacast_main, "get_water_quality_metric_thresholds"):
+            try:
+                result = self._aquacast_main.get_water_quality_metric_thresholds()
+                if isinstance(result, dict) and result.get("status") == "ok":
+                    return self._normalize_metric_thresholds(result.get("thresholds", {}))
+            except Exception as exc:
+                carb.log_warn(f"[test-Aquacast] Metric threshold load failed: {exc}")
+        return self._default_metric_thresholds()
+
+    def _create_metrics_dashboard_window(self):
+        quality_enabled = bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False)))
+        if not quality_enabled or not bool(_get_runtime_config("ENABLE_WQ_METRICS_DASHBOARD", True)):
+            return
+        if self._aquacast_main is None:
+            return
+        if self._metrics_window is not None:
+            return
+
+        self._metrics_window = ui.Window("Aquacast Metrics Dashboard", width=760, height=780, visible=True)
+        self._metrics_thresholds = self._load_metric_thresholds()
+        self._refresh_metrics_tank_data()
+        self._build_metrics_dashboard_contents()
+        self._register_metrics_dashboard_menu()
+        self._metrics_update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+            self._on_metrics_dashboard_update,
+            name="aquacast_metrics_dashboard_ui",
+        )
+        self._on_metrics_dashboard_update(None, force=True)
+
+    def _register_metrics_dashboard_menu(self):
+        if self._metrics_menu_items:
+            return
+        self._metrics_menu_items = [
+            MenuItemDescription(
+                name="Aquacast/Metrics Dashboard",
+                onclick_fn=self._show_metrics_dashboard_window,
+            )
+        ]
+        omni.kit.menu.utils.add_menu_items(self._metrics_menu_items, name="Window")
+
+    def _show_metrics_dashboard_window(self):
+        if self._metrics_window is None:
+            self._create_metrics_dashboard_window()
+            return
+        self._metrics_window.visible = True
+        self._on_metrics_dashboard_update(None, force=True)
+
+    def _refresh_metrics_tank_data(self):
+        self._metrics_tanks, self._metrics_tank_labels = self._sensor_tank_window_data()
+        self._metrics_tank_index = self._clamp_index(self._metrics_tank_index, self._metrics_tanks)
+
+    def _selected_metrics_tank(self):
+        if not self._metrics_tanks:
+            return None
+        index = self._clamp_index(self._sensor_combo_index(self._metrics_tank_combo, self._metrics_tank_index), self._metrics_tanks)
+        self._metrics_tank_index = index
+        return self._metrics_tanks[index]
+
+    def _build_metrics_dashboard_contents(self):
+        if self._metrics_window is None:
+            return
+        self._metrics_chart_frames = {}
+        self._metrics_current_labels = {}
+        self._metrics_range_labels = {}
+        self._metrics_state_frames = {}
+        self._metrics_threshold_fields = {}
+        with self._metrics_window.frame:
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=8):
+                    ui.Label("Metrics Dashboard", height=24)
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Label("Tank:", width=58)
+                        self._metrics_tank_index = self._clamp_index(self._metrics_tank_index, self._metrics_tank_labels)
+                        self._metrics_tank_combo = ui.ComboBox(self._metrics_tank_index, *(self._metrics_tank_labels or ["(no tanks)"]))
+                        ui.Button("Refresh", width=80, clicked_fn=lambda: self._refresh_metrics_dashboard(rebuild=True))
+                        ui.Button("Save Thresholds", width=130, clicked_fn=self._save_metric_thresholds)
+                    self._metrics_status_label = ui.Label("Waiting for water-quality data", height=24, word_wrap=True)
+                    for spec in self._dashboard_metric_specs():
+                        self._build_metric_dashboard_panel(spec)
+
+    def _build_metric_dashboard_panel(self, spec):
+        key = spec["key"]
+        threshold = self._metrics_thresholds.get(key, {"value": spec["default_threshold"], "mode": spec["mode"]})
+        with ui.ZStack(height=164):
+            ui.Rectangle(style={"background_color": 0xFF0B111A, "border_color": self._METRIC_DASHBOARD_GRID_COLOR, "border_width": 1})
+            with ui.VStack(spacing=4):
+                with ui.HStack(height=24, spacing=6):
+                    ui.Label(str(spec["label"]), width=210)
+                    self._metrics_current_labels[key] = ui.Label("--", width=140)
+                    self._metrics_range_labels[key] = ui.Label("range --", width=150)
+                    state_frame = ui.Frame(width=70, height=20)
+                    self._metrics_state_frames[key] = state_frame
+                with ui.HStack(height=28, spacing=6):
+                    mode_label = "Min" if threshold.get("mode", spec["mode"]) == "min" else "Max"
+                    ui.Label(f"{mode_label} threshold", width=120)
+                    field = ui.FloatField(width=92)
+                    try:
+                        field.model.set_value(float(threshold.get("value", spec["default_threshold"])))
+                    except Exception:
+                        pass
+                    self._metrics_threshold_fields[key] = field
+                    unit = str(spec.get("unit") or "")
+                    ui.Label(unit, width=48)
+                    ui.Button("Save", width=62, clicked_fn=self._save_metric_thresholds)
+                    ui.Label("red line = threshold", height=22)
+                chart_frame = ui.Frame(height=104)
+                self._metrics_chart_frames[key] = chart_frame
+
+    def _refresh_metrics_dashboard(self, rebuild=False):
+        self._refresh_metrics_tank_data()
+        if rebuild:
+            self._metrics_thresholds = self._load_metric_thresholds()
+            self._build_metrics_dashboard_contents()
+        self._on_metrics_dashboard_update(None, force=True)
+
+    def _save_metric_thresholds(self):
+        values = self._normalize_metric_thresholds(self._metrics_thresholds)
+        for spec in self._METRIC_DASHBOARD_SPECS:
+            key = spec["key"]
+            values[key] = {
+                "value": self._metric_threshold_value(spec),
+                "mode": values.get(key, {}).get("mode", spec["mode"]),
+            }
+        if self._aquacast_main and hasattr(self._aquacast_main, "set_water_quality_metric_thresholds"):
+            try:
+                result = self._aquacast_main.set_water_quality_metric_thresholds(values)
+            except Exception as exc:
+                result = {"status": "error", "error": str(exc)}
+        else:
+            result = {"status": "error", "error": "threshold API unavailable"}
+        if isinstance(result, dict) and result.get("status") == "ok":
+            self._metrics_thresholds = self._normalize_metric_thresholds(result.get("thresholds", values))
+            self._set_metrics_status("Thresholds saved")
+            self._on_metrics_dashboard_update(None, force=True)
+        else:
+            error = result.get("error", result.get("status", "unknown")) if isinstance(result, dict) else "unknown"
+            self._set_metrics_status(f"Threshold save failed: {error}")
+
+    def _on_metrics_dashboard_update(self, _event, force=False):
+        if self._metrics_window is None or self._aquacast_main is None:
+            return
+        now = time.monotonic()
+        interval = float(_get_runtime_config("WQ_METRICS_DASHBOARD_UPDATE_INTERVAL_SECONDS", 0.5) or 0.5)
+        if not force and now - self._metrics_last_update < max(0.05, interval):
+            return
+        self._metrics_last_update = now
+
+        previous_tanks = list(self._metrics_tanks)
+        previous_labels = list(self._metrics_tank_labels)
+        self._refresh_metrics_tank_data()
+        if previous_tanks != self._metrics_tanks or previous_labels != self._metrics_tank_labels:
+            self._build_metrics_dashboard_contents()
+
+        tank_path = self._selected_metrics_tank()
+        if not tank_path:
+            self._set_metrics_status("No tanks found")
+            return
+        try:
+            snapshot = self._aquacast_main.get_quality_snapshot(tank_path=tank_path)
+        except Exception as exc:
+            self._set_metrics_status(f"snapshot failed: {exc}")
+            return
+        if not isinstance(snapshot, dict) or snapshot.get("status") != "ok":
+            status = snapshot.get("status", "unknown") if isinstance(snapshot, dict) else "unknown"
+            self._set_metrics_status(f"snapshot unavailable: {status}")
+            return
+
+        for spec in self._dashboard_metric_specs():
+            key = spec["key"]
+            try:
+                value = float(snapshot.get(key, 0.0))
+            except (TypeError, ValueError):
+                value = 0.0
+            history = self._append_metric_history(tank_path, key, value, interval)
+            self._update_metric_panel(spec, value, history)
+        label = self._sensor_tank_label(tank_path)
+        self._set_metrics_status(f"Live trend: {label} | {len(self._dashboard_metric_specs())} metrics")
+
+    def _append_metric_history(self, tank_path, key, value, interval):
+        history_key = (str(tank_path or ""), str(key))
+        history = self._metrics_history.setdefault(history_key, [])
+        history.append(float(value))
+        history_seconds = float(_get_runtime_config("WQ_METRICS_DASHBOARD_HISTORY_SECONDS", 180.0) or 180.0)
+        limit = max(8, int(history_seconds / max(0.05, float(interval))))
+        if len(history) > limit:
+            del history[:len(history) - limit]
+        return history
+
+    def _update_metric_panel(self, spec, value, history):
+        key = spec["key"]
+        threshold = self._metric_threshold_value(spec)
+        label = self._metrics_current_labels.get(key)
+        if label is not None:
+            label.text = f"{spec['short']} {self._format_metric_value(spec, value)}"
+        state, color = self._metric_state(spec, value, threshold)
+        self._update_metric_state_frame(key, state, color)
+        y_min, y_max = self._metric_chart_range(spec, history, threshold)
+        range_label = self._metrics_range_labels.get(key)
+        if range_label is not None:
+            range_label.text = f"range {y_min:.2f} - {y_max:.2f}"
+        self._draw_metric_chart(spec, history, threshold, y_min, y_max, color)
+
+    def _metric_threshold_value(self, spec):
+        key = spec["key"]
+        field = self._metrics_threshold_fields.get(key)
+        if field is not None:
+            for attr in ("as_float", "get_value_as_float"):
+                try:
+                    model = field.model
+                    value = getattr(model, attr)
+                    return float(value() if callable(value) else value)
+                except Exception:
+                    pass
+        try:
+            return float(self._metrics_thresholds.get(key, {}).get("value", spec["default_threshold"]))
+        except (TypeError, ValueError):
+            return float(spec["default_threshold"])
+
+    def _metric_state(self, spec, value, threshold):
+        mode = self._metrics_thresholds.get(spec["key"], {}).get("mode", spec["mode"])
+        violated = value < threshold if mode == "min" else value > threshold
+        if violated:
+            return ("LOW" if mode == "min" else "HIGH"), 0xFFE53935
+        return "OK", 0xFF00C853
+
+    def _format_metric_value(self, spec, value):
+        unit = str(spec.get("unit") or "")
+        if spec["key"] == "ph":
+            return f"{value:.2f}"
+        return f"{value:.2f} {unit}".strip()
+
+    def _metric_chart_range(self, spec, history, threshold):
+        values = []
+        for value in history or []:
+            try:
+                values.append(float(value))
+            except (TypeError, ValueError):
+                pass
+        if not values:
+            values = [float(threshold)]
+        y_min = min(values)
+        y_max = max(values)
+        min_span = max(1e-6, float(spec.get("min_span", 0.1)))
+        if y_max - y_min < min_span:
+            center = (y_min + y_max) * 0.5
+            y_min = center - min_span * 0.5
+            y_max = center + min_span * 0.5
+        span = max(min_span, y_max - y_min)
+        pad = max(min_span * 0.25, span * 0.18)
+        return y_min - pad, y_max + pad
+
+    def _update_metric_state_frame(self, key, state, color):
+        frame = self._metrics_state_frames.get(key)
+        if frame is None:
+            return
+        with frame:
+            with ui.ZStack(height=20):
+                ui.Rectangle(style={"background_color": color, "border_radius": 4})
+                ui.Label(str(state), alignment=ui.Alignment.CENTER)
+
+    def _draw_metric_chart(self, spec, history, threshold, y_min, y_max, state_color):
+        frame = self._metrics_chart_frames.get(spec["key"])
+        if frame is None:
+            return
+        values = list(history or [])
+        if len(values) < 2:
+            values = values + values[:1]
+        if len(values) < 2:
+            values = [0.0, 0.0]
+        threshold_y = min(max(float(threshold), float(y_min)), float(y_max))
+        with frame:
+            with ui.ZStack(height=100):
+                ui.Rectangle(style={"background_color": self._METRIC_DASHBOARD_BACKGROUND_COLOR, "border_color": self._METRIC_DASHBOARD_GRID_COLOR, "border_width": 1})
+                self._plot_metric_line(values, y_min, y_max, spec.get("color", state_color), 98)
+                self._draw_metric_threshold_line(threshold_y, y_min, y_max, 98)
+
+    def _draw_metric_threshold_line(self, threshold, y_min, y_max, height):
+        span = max(1e-9, float(y_max) - float(y_min))
+        normalized = (float(threshold) - float(y_min)) / span
+        normalized = max(0.0, min(1.0, normalized))
+        top_height = max(0, int(round((1.0 - normalized) * max(1, int(height) - 2))))
+        bottom_height = max(0, int(height) - top_height - 2)
+        with ui.VStack(height=height):
+            if top_height > 0:
+                ui.Spacer(height=top_height)
+            ui.Rectangle(height=2, style={"background_color": self._METRIC_DASHBOARD_THRESHOLD_COLOR})
+            if bottom_height > 0:
+                ui.Spacer(height=bottom_height)
+
+    def _plot_metric_line(self, values, y_min, y_max, color, height):
+        plot_cls = getattr(ui, "Plot", None)
+        type_container = getattr(ui, "Type", None)
+        plot_type = getattr(type_container, "LINE", None) if type_container is not None else None
+        if plot_type is None:
+            plot_type = getattr(getattr(ui, "PlotType", None), "LINE", None)
+        if plot_cls is None or plot_type is None:
+            ui.Label("Plot widget unavailable", height=height)
+            return
+        safe_values = [float(value) for value in values]
+        style = {"color": color, "line_width": 2}
+        arg_sets = (
+            (plot_type, float(y_min), float(y_max), *safe_values),
+            (plot_type, float(y_min), float(y_max), safe_values),
+            (plot_type, float(y_min), float(y_max), len(safe_values), safe_values),
+            (plot_type, *safe_values),
+        )
+        kwarg_sets = (
+            {"height": height, "style": style},
+            {"height": height},
+            {},
+        )
+        for kwargs in kwarg_sets:
+            for args in arg_sets:
+                try:
+                    plot_cls(*args, **kwargs)
+                    return
+                except Exception:
+                    pass
+        ui.Label("Plot failed", height=height)
+
+    def _set_metrics_status(self, text):
+        if self._metrics_status_label is not None:
+            self._metrics_status_label.text = str(text)
+
+    def _teardown_metrics_dashboard_window(self):
+        self._metrics_update_sub = None
+        self._metrics_window = None
+        self._metrics_tank_combo = None
+        self._metrics_status_label = None
+        self._metrics_chart_frames = {}
+        self._metrics_current_labels = {}
+        self._metrics_range_labels = {}
+        self._metrics_state_frames = {}
+        self._metrics_threshold_fields = {}
+        if self._metrics_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._metrics_menu_items, "Window")
+            self._metrics_menu_items = []
 
 
     def _create_fish_window(self):
@@ -736,27 +1828,28 @@ class CreateSetupExtension(omni.ext.IExt):
             self._fish_species_labels = ["(no species)"]
 
         with self._fish_window.frame:
-            with ui.VStack(spacing=6):
-                ui.Label("Fish Management", height=22)
-                with ui.HStack(height=26, spacing=6):
-                    ui.Label("Tank:", width=70)
-                    self._fish_tank_combo = ui.ComboBox(0, *self._fish_tank_labels)
-                with ui.HStack(height=26, spacing=6):
-                    ui.Label("Species:", width=70)
-                    self._fish_species_combo = ui.ComboBox(0, *self._fish_species_labels)
-                self._fish_count_label = ui.Label("Total 0/30", height=24)
-                with ui.HStack(height=26, spacing=6):
-                    ui.Label("Qty:", width=70)
-                    self._fish_qty_field = ui.IntField()
-                    try:
-                        self._fish_qty_field.model.set_value(1)
-                    except Exception:
-                        pass
-                with ui.HStack(height=30, spacing=6):
-                    self._fish_add_button = ui.Button("ADD", clicked_fn=self._on_fish_add_clicked)
-                    self._fish_delete_button = ui.Button("DELETE", clicked_fn=self._on_fish_delete_clicked)
-                self._fish_clear_button = ui.Button("Clear All", height=30, clicked_fn=self._on_fish_clear_clicked)
-                self._fish_status_label = ui.Label("스테이지/탱크 대기", height=42, word_wrap=True)
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=6):
+                    ui.Label("Fish Management", height=22)
+                    with ui.HStack(height=26, spacing=6):
+                        ui.Label("Tank:", width=70)
+                        self._fish_tank_combo = ui.ComboBox(0, *self._fish_tank_labels)
+                    with ui.HStack(height=26, spacing=6):
+                        ui.Label("Species:", width=70)
+                        self._fish_species_combo = ui.ComboBox(0, *self._fish_species_labels)
+                    self._fish_count_label = ui.Label("Total 0/30", height=24)
+                    with ui.HStack(height=26, spacing=6):
+                        ui.Label("Qty:", width=70)
+                        self._fish_qty_field = ui.IntField()
+                        try:
+                            self._fish_qty_field.model.set_value(1)
+                        except Exception:
+                            pass
+                    with ui.HStack(height=30, spacing=6):
+                        self._fish_add_button = ui.Button("ADD", clicked_fn=self._on_fish_add_clicked)
+                        self._fish_delete_button = ui.Button("DELETE", clicked_fn=self._on_fish_delete_clicked)
+                    self._fish_clear_button = ui.Button("Clear All", height=30, clicked_fn=self._on_fish_clear_clicked)
+                    self._fish_status_label = ui.Label("스테이지/탱크 대기", height=42, word_wrap=True)
 
     def _set_fish_button_enabled(self, button, enabled):
         if button is None:
@@ -769,6 +1862,24 @@ class CreateSetupExtension(omni.ext.IExt):
     def _set_fish_status(self, text):
         if self._fish_status_label is not None:
             self._fish_status_label.text = str(text)
+
+    def _fish_stock_status_suffix(self, result):
+        if not isinstance(result, dict):
+            return ""
+        stock = result.get("stock") or {}
+        status = str(result.get("stock_sync_status") or "")
+        if not stock:
+            return f" | WQ {status}" if status and status != "ok" else ""
+        try:
+            fish_count = float(stock.get("fish_count", 0.0))
+            biomass_kg = float(stock.get("biomass_kg", 0.0))
+            mean_weight_kg = float(stock.get("fish_weight_kg", 0.0))
+        except Exception:
+            return f" | WQ {status}" if status else ""
+        suffix = f" | WQ {fish_count:.0f} fish, {biomass_kg:.1f} kg, mean {mean_weight_kg:.2f} kg"
+        if status and status != "ok":
+            suffix += f", {status}"
+        return suffix
 
     def _on_fish_ui_update(self, _event, force=False):
         if self._fish_window is None or self._aquacast_main is None:
@@ -833,7 +1944,7 @@ class CreateSetupExtension(omni.ext.IExt):
             return
         added = int(result.get("added", 0))
         suffix = " (clamped at cap)" if result.get("clamped") else ""
-        self._set_fish_status(f"ADD {qty} -> {added} added{suffix}")
+        self._set_fish_status(f"ADD {qty} -> {added} added{suffix}{self._fish_stock_status_suffix(result)}")
         self._on_fish_ui_update(None, force=True)
 
     def _on_fish_delete_clicked(self):
@@ -852,7 +1963,7 @@ class CreateSetupExtension(omni.ext.IExt):
             self._set_fish_status(f"DELETE 실패: {exc}")
             return
         removed = int(result.get("removed", 0))
-        status = "선택한 종 없음" if removed == 0 else f"DELETE {qty} -> {removed} removed"
+        status = "선택한 종 없음" if removed == 0 else f"DELETE {qty} -> {removed} removed{self._fish_stock_status_suffix(result)}"
         self._set_fish_status(status)
         self._on_fish_ui_update(None, force=True)
 
@@ -866,7 +1977,7 @@ class CreateSetupExtension(omni.ext.IExt):
         except Exception as exc:
             self._set_fish_status(f"Clear 실패: {exc}")
             return
-        self._set_fish_status(f"Clear All -> {int(result.get('removed', 0))} removed")
+        self._set_fish_status(f"Clear All -> {int(result.get('removed', 0))} removed{self._fish_stock_status_suffix(result)}")
         self._on_fish_ui_update(None, force=True)
 
     def _teardown_fish_window(self):
@@ -1192,8 +2303,13 @@ class CreateSetupExtension(omni.ext.IExt):
             self._aquacast_main = None
         self._sub_fabric_delegate_changed = None
         self._sensor_update_sub = None
+        self._actuator_update_sub = None
+        self._metrics_update_sub = None
         self._sensor_window = None
         self._wq_view_window = None
+        self._control_window = None
+        self._actuator_window = None
+        self._teardown_metrics_dashboard_window()
         self._teardown_fish_window()
         if self._sensor_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._sensor_menu_items, "Window")
@@ -1201,6 +2317,15 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._wq_view_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._wq_view_menu_items, "Window")
             self._wq_view_menu_items = []
+        if self._control_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._control_menu_items, "Window")
+            self._control_menu_items = []
+        if self._actuator_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._actuator_menu_items, "Window")
+            self._actuator_menu_items = []
+        if self._metrics_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._metrics_menu_items, "Window")
+            self._metrics_menu_items = []
         if self._aquacast_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._aquacast_menu_items, "Aquacast")
             self._aquacast_menu_items = []
