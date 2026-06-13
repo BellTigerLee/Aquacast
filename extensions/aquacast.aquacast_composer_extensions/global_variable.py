@@ -210,6 +210,18 @@ WQ_METRIC_DASHBOARD_THRESHOLDS = {
     "co2_mg_l": {"value": 15.0, "mode": "max"},
 }
 
+# Local LM Studio UI panel integrated into the Aquacast extension.
+ENABLE_LOCAL_LLM_PANEL = True
+LOCAL_LLM_PANEL_OPEN_ON_STARTUP = False
+LM_STUDIO_SERVER_URL = "http://127.0.0.1:1234"
+LM_STUDIO_MODEL_NAME = ""
+LM_STUDIO_POLL_INTERVAL_SECONDS = 60
+LM_STUDIO_TIMEOUT_SECONDS = 120.0
+LM_STUDIO_TEMPERATURE = 0.7
+LM_STUDIO_MAX_TOKENS = 256
+LM_STUDIO_SYSTEM_PROMPT = "You are a concise assistant running locally through LM Studio for Aquacast."
+LM_STUDIO_DEFAULT_PROMPT = "You are connected to Aquacast. Give a concise status-style response."
+
 # Practical operating thresholds for salmon/RAS-style water-quality views.
 # Units match snapshot/sensor keys: degC, mg/L, pH, mg/L as CaCO3, ppt, NTU.
 WQ_THRESHOLDS = {
