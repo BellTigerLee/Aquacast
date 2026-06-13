@@ -38,7 +38,7 @@ class KafkaPublisher:
     def __init__(self, env: dict[str, str] | None = None):
         env = env if env is not None else os.environ
         self.enabled = _truthy(env.get("AQUACAST_KAFKA_ENABLED"))
-        self.bootstrap = env.get("AQUACAST_KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
+        self.bootstrap = env.get("AQUACAST_KAFKA_BOOTSTRAP_SERVERS", "localhost:29092")
         self.topic = env.get("AQUACAST_KAFKA_TOPIC", "aquacast.water_quality")
         self.tank_id = env.get("AQUACAST_KAFKA_TANK_ID", "tank-01")
         self.client_id = env.get("AQUACAST_KAFKA_CLIENT_ID", "aquacast-wq-backend")
