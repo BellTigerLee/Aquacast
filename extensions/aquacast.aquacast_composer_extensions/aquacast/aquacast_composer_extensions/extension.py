@@ -150,6 +150,18 @@ class CreateSetupExtension(omni.ext.IExt):
         "biofilter_sentinel": ("nitrite_mg_l", "nitrate_mg_l"),
         "mixed_tank_outlet": ("dissolved_oxygen_mg_l",),
     }
+    _WQ_ACTUATOR_ROWS = (
+        ("inlet_enabled", "Inlet"),
+        ("outlet_enabled", "Outlet"),
+        ("biofilter_on", "Biofilter"),
+        ("mechanical_filter_on", "Mech"),
+        ("heater_on", "Heater"),
+    )
+    _WQ_STATUS_DOT_STYLES = {
+        "on": {"background_color": 0xFF00C853, "border_radius": 6},
+        "off": {"background_color": 0xFFE53935, "border_radius": 6},
+        "unknown": {"background_color": 0xFF808080, "border_radius": 6},
+    }
 
     def on_startup(self, _ext_id):
         """
@@ -178,6 +190,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._sensor_path_label = None
         self._sensor_value_labels = {}
         self._sensor_value_rows = {}
+        self._sensor_actuator_dots = {}
         self._sensor_tanks = []
         self._sensor_tank_labels = []
         self._sensor_tank_combo = None
@@ -200,6 +213,14 @@ class CreateSetupExtension(omni.ext.IExt):
         self._control_fields = {}
         self._control_status_label = None
         self._control_rebuild_requested = False
+        self._actuator_window = None
+        self._actuator_update_sub = None
+        self._actuator_menu_items = []
+        self._actuator_last_update = 0.0
+        self._actuator_status_label = None
+        self._actuator_tanks = []
+        self._actuator_tank_labels = []
+        self._actuator_tank_dot_sets = {}
         self._fish_window = None
         self._fish_update_sub = None
         self._fish_last_update = 0.0
@@ -346,6 +367,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._create_sensor_window()
         self._create_wq_view_window()
         self._create_control_window()
+        self._create_actuator_window()
         self._create_fish_window()
 
         startup_time = \
@@ -499,7 +521,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         quality_enabled = bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False)))
         title = "Aquacast Water Quality Sensor" if quality_enabled else "Aquacast Temperature Sensor"
-        self._sensor_window = ui.Window(title, width=470, height=390 if quality_enabled else 310, visible=True)
+        self._sensor_window = ui.Window(title, width=500, height=450 if quality_enabled else 310, visible=True)
         self._sensor_tanks, self._sensor_tank_labels = self._sensor_tank_window_data()
         self._sensor_names = self._sensor_name_window_data() if quality_enabled else []
         self._sensor_name_labels = [self._sensor_label_for_name(name) for name in self._sensor_names]
@@ -517,37 +539,67 @@ class CreateSetupExtension(omni.ext.IExt):
             return
         self._sensor_combo_change_subs = []
         with self._sensor_window.frame:
-            with ui.VStack(spacing=6):
-                ui.Label("Water Quality Sensor" if quality_enabled else "Temperature Sensor", height=22)
-                if quality_enabled:
-                    with ui.HStack(height=26, spacing=6):
-                        ui.Label("Tank:", width=70)
-                        self._sensor_tank_index = self._clamp_index(self._sensor_tank_index, self._sensor_tank_labels)
-                        self._sensor_tank_combo = ui.ComboBox(self._sensor_tank_index, *(self._sensor_tank_labels or ["(no tanks)"]))
-                        self._bind_sensor_combo(self._sensor_tank_combo, "_sensor_tank_index")
-                    with ui.HStack(height=26, spacing=6):
-                        ui.Label("Sensor:", width=70)
-                        self._sensor_name_index = self._clamp_index(self._sensor_name_index, self._sensor_names)
-                        self._sensor_name_combo = ui.ComboBox(self._sensor_name_index, *(self._sensor_name_labels or ["mixed_tank_outlet"]))
-                        self._bind_sensor_combo(self._sensor_name_combo, "_sensor_name_index")
-                self._sensor_status_label = ui.Label("Waiting for particles", height=20)
-                self._sensor_value_labels = {}
-                self._sensor_value_rows = {}
-                rows = list(self._WQ_SENSOR_ROWS) if quality_enabled else [
-                    ("average_c", "Average"),
-                    ("range_c", "Range"),
-                    ("sample_count", "Samples"),
-                ]
-                for key, label in rows:
-                    row = ui.HStack(height=20)
-                    with row:
-                        ui.Label(label, width=115)
-                        value_label = ui.Label("--")
-                        self._sensor_value_labels[key] = value_label
-                    self._sensor_value_rows[key] = row
-                if quality_enabled:
-                    self._apply_sensor_row_visibility(self._selected_sensor_name())
-                self._sensor_path_label = ui.Label("Sensor: --", height=42, word_wrap=True)
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=6):
+                    ui.Label("Water Quality Sensor" if quality_enabled else "Temperature Sensor", height=22)
+                    if quality_enabled:
+                        with ui.HStack(height=26, spacing=6):
+                            ui.Label("Tank:", width=70)
+                            self._sensor_tank_index = self._clamp_index(self._sensor_tank_index, self._sensor_tank_labels)
+                            self._sensor_tank_combo = ui.ComboBox(self._sensor_tank_index, *(self._sensor_tank_labels or ["(no tanks)"]))
+                            self._bind_sensor_combo(self._sensor_tank_combo, "_sensor_tank_index")
+                        with ui.HStack(height=26, spacing=6):
+                            ui.Label("Sensor:", width=70)
+                            self._sensor_name_index = self._clamp_index(self._sensor_name_index, self._sensor_names)
+                            self._sensor_name_combo = ui.ComboBox(self._sensor_name_index, *(self._sensor_name_labels or ["mixed_tank_outlet"]))
+                            self._bind_sensor_combo(self._sensor_name_combo, "_sensor_name_index")
+                    self._sensor_status_label = ui.Label("Waiting for particles", height=20)
+                    self._sensor_value_labels = {}
+                    self._sensor_value_rows = {}
+                    rows = list(self._WQ_SENSOR_ROWS) if quality_enabled else [
+                        ("average_c", "Average"),
+                        ("range_c", "Range"),
+                        ("sample_count", "Samples"),
+                    ]
+                    for key, label in rows:
+                        row = ui.HStack(height=20)
+                        with row:
+                            ui.Label(label, width=115)
+                            value_label = ui.Label("--")
+                            self._sensor_value_labels[key] = value_label
+                        self._sensor_value_rows[key] = row
+                    if quality_enabled:
+                        self._apply_sensor_row_visibility(self._selected_sensor_name())
+                        self._build_sensor_actuator_rows()
+                    self._sensor_path_label = ui.Label("Sensor: --", height=42, word_wrap=True)
+
+    def _build_sensor_actuator_rows(self):
+        self._sensor_actuator_dots = {}
+        ui.Label("Actuators", height=18)
+        with ui.HStack(height=22, spacing=8):
+            for key, label in self._WQ_ACTUATOR_ROWS:
+                with ui.HStack(width=88, spacing=2):
+                    ui.Label(label, width=68)
+                    self._sensor_actuator_dots[key] = self._build_status_indicator()
+
+    def _build_status_indicator(self, size=12):
+        dots = {}
+        for state in ("on", "off", "unknown"):
+            dot = ui.Rectangle(width=size, height=size, style=self._WQ_STATUS_DOT_STYLES[state])
+            dot.visible = state == "unknown"
+            dots[state] = dot
+        return dots
+
+    def _set_status_indicator(self, dots, value):
+        if value is None:
+            state = "unknown"
+        else:
+            state = "on" if bool(value) else "off"
+        for dot_state, dot in (dots or {}).items():
+            try:
+                dot.visible = dot_state == state
+            except Exception:
+                pass
 
     def _register_sensor_window_menu(self):
         if self._sensor_menu_items:
@@ -668,6 +720,15 @@ class CreateSetupExtension(omni.ext.IExt):
             return f"{value:.4f} mg/L"
         return str(reading.get(key, "--"))
 
+    def _update_sensor_actuator_statuses(self, reading):
+        if not self._sensor_actuator_dots:
+            return
+        for key, _label in self._WQ_ACTUATOR_ROWS:
+            self._set_status_indicator(
+                self._sensor_actuator_dots.get(key, {}),
+                reading.get(key) if key in reading else None,
+            )
+
     def _selected_sensor_tank(self):
         if not self._sensor_tanks:
             return None
@@ -779,6 +840,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._sensor_status_label.text = status
             for label in self._sensor_value_labels.values():
                 label.text = "--"
+            self._update_sensor_actuator_statuses({})
             if self._sensor_path_label:
                 self._sensor_path_label.text = f"Sensor: {reading.get('sensor_path', '--')}"
             return
@@ -791,6 +853,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._sensor_status_label.text = self._sensor_label_for_name(sensor_name)
             for key in visible_keys:
                 self._set_sensor_label(key, self._format_wq_sensor_value(key, reading))
+            self._update_sensor_actuator_statuses(reading)
             if self._sensor_path_label:
                 tank = reading.get("tank_name") or reading.get("tank_path") or "--"
                 self._sensor_path_label.text = f"Tank: {tank}\nSensor: {reading.get('sensor_path', '--')}"
@@ -818,20 +881,21 @@ class CreateSetupExtension(omni.ext.IExt):
 
         self._wq_view_window = ui.Window("Aquacast Water Quality View", width=300, height=220, visible=True)
         with self._wq_view_window.frame:
-            with ui.VStack(spacing=6):
-                self._wq_view_label = ui.Label("Current: --", height=22)
-                with ui.HStack(height=28, spacing=6):
-                    ui.Button("Temp", clicked_fn=lambda: self._select_wq_view_variable("temperature"))
-                    ui.Button("DO", clicked_fn=lambda: self._select_wq_view_variable("dissolved_oxygen"))
-                    ui.Button("TAN", clicked_fn=lambda: self._select_wq_view_variable("tan"))
-                with ui.HStack(height=28, spacing=6):
-                    ui.Button("CO2", clicked_fn=lambda: self._select_wq_view_variable("co2"))
-                    ui.Button("pH", clicked_fn=lambda: self._select_wq_view_variable("ph"))
-                    ui.Button("Alk", clicked_fn=lambda: self._select_wq_view_variable("alkalinity"))
-                with ui.HStack(height=28, spacing=6):
-                    ui.Button("NH3", clicked_fn=lambda: self._select_wq_view_variable("nh3"))
-                    ui.Button("Sal", clicked_fn=lambda: self._select_wq_view_variable("salinity"))
-                    ui.Button("Turb", clicked_fn=lambda: self._select_wq_view_variable("turbidity"))
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=6):
+                    self._wq_view_label = ui.Label("Current: --", height=22)
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Button("Temp", clicked_fn=lambda: self._select_wq_view_variable("temperature"))
+                        ui.Button("DO", clicked_fn=lambda: self._select_wq_view_variable("dissolved_oxygen"))
+                        ui.Button("TAN", clicked_fn=lambda: self._select_wq_view_variable("tan"))
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Button("CO2", clicked_fn=lambda: self._select_wq_view_variable("co2"))
+                        ui.Button("pH", clicked_fn=lambda: self._select_wq_view_variable("ph"))
+                        ui.Button("Alk", clicked_fn=lambda: self._select_wq_view_variable("alkalinity"))
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Button("NH3", clicked_fn=lambda: self._select_wq_view_variable("nh3"))
+                        ui.Button("Sal", clicked_fn=lambda: self._select_wq_view_variable("salinity"))
+                        ui.Button("Turb", clicked_fn=lambda: self._select_wq_view_variable("turbidity"))
 
         self._register_wq_view_window_menu()
         self._refresh_wq_view_label()
@@ -948,68 +1012,69 @@ class CreateSetupExtension(omni.ext.IExt):
             return
         self._control_fields = {}
         with self._control_window.frame:
-            with ui.VStack(spacing=7):
-                ui.Label("Tank Controls", height=22)
-                with ui.HStack(height=26, spacing=6):
-                    ui.Label("Tank:", width=85)
-                    self._control_tank_index = self._clamp_index(self._control_tank_index, self._control_tank_labels)
-                    self._control_tank_combo = ui.ComboBox(self._control_tank_index, *(self._control_tank_labels or ["(no tanks)"]))
-                    ui.Button("Refresh", width=80, clicked_fn=lambda: self._refresh_control_tank_data(rebuild=True))
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=7):
+                    ui.Label("Tank Controls", height=22)
+                    with ui.HStack(height=26, spacing=6):
+                        ui.Label("Tank:", width=85)
+                        self._control_tank_index = self._clamp_index(self._control_tank_index, self._control_tank_labels)
+                        self._control_tank_combo = ui.ComboBox(self._control_tank_index, *(self._control_tank_labels or ["(no tanks)"]))
+                        ui.Button("Refresh", width=80, clicked_fn=lambda: self._refresh_control_tank_data(rebuild=True))
 
-                self._control_status_label = ui.Label("Ready", height=38, word_wrap=True)
+                    self._control_status_label = ui.Label("Ready", height=38, word_wrap=True)
 
-                ui.Label("Thermal", height=20)
-                self._control_float_row("temperature_c", "Set Temp C", 14.0, "Apply", lambda: self._control_action("set_temperature", temperature_c=self._control_float("temperature_c", 14.0)))
-                self._control_float_row("heater_w", "Heater W", 0.0, "Apply", lambda: self._control_action("set_heater", power_w=self._control_float("heater_w", 0.0)))
-                self._control_float_row("inlet_temp_c", "Inlet Temp C", 12.0, "Apply", lambda: self._control_action("set_inlet_temperature", temperature_c=self._control_float("inlet_temp_c", 12.0)))
+                    ui.Label("Thermal", height=20)
+                    self._control_float_row("temperature_c", "Set Temp C", 14.0, "Apply", lambda: self._control_action("set_temperature", temperature_c=self._control_float("temperature_c", 14.0)))
+                    self._control_float_row("heater_w", "Heater W", 0.0, "Apply", lambda: self._control_action("set_heater", power_w=self._control_float("heater_w", 0.0)))
+                    self._control_float_row("inlet_temp_c", "Inlet Temp C", 12.0, "Apply", lambda: self._control_action("set_inlet_temperature", temperature_c=self._control_float("inlet_temp_c", 12.0)))
 
-                ui.Label("Feeding / Stock", height=20)
-                self._control_float_row("feed_kg", "Feed kg", 1.0, "Pulse", lambda: self._control_action("feed", mass_kg=self._control_float("feed_kg", 1.0)))
-                with ui.HStack(height=26, spacing=6):
-                    ui.Label("Stock", width=85)
-                    self._control_fields["fish_count"] = ui.FloatField(width=95)
-                    self._set_control_float("fish_count", 200.0)
-                    ui.Label("fish", width=32)
-                    self._control_fields["fish_weight_kg"] = ui.FloatField(width=95)
-                    self._set_control_float("fish_weight_kg", 1.0)
-                    ui.Label("kg", width=22)
-                    ui.Button("Apply", width=70, clicked_fn=lambda: self._control_action(
-                        "set_stock",
-                        fish_count=self._control_float("fish_count", 200.0),
-                        fish_weight_kg=self._control_float("fish_weight_kg", 1.0),
-                    ))
+                    ui.Label("Feeding / Stock", height=20)
+                    self._control_float_row("feed_kg", "Feed kg", 1.0, "Pulse", lambda: self._control_action("feed", mass_kg=self._control_float("feed_kg", 1.0)))
+                    with ui.HStack(height=26, spacing=6):
+                        ui.Label("Stock", width=85)
+                        self._control_fields["fish_count"] = ui.FloatField(width=95)
+                        self._set_control_float("fish_count", 200.0)
+                        ui.Label("fish", width=32)
+                        self._control_fields["fish_weight_kg"] = ui.FloatField(width=95)
+                        self._set_control_float("fish_weight_kg", 1.0)
+                        ui.Label("kg", width=22)
+                        ui.Button("Apply", width=70, clicked_fn=lambda: self._control_action(
+                            "set_stock",
+                            fish_count=self._control_float("fish_count", 200.0),
+                            fish_weight_kg=self._control_float("fish_weight_kg", 1.0),
+                        ))
 
-                ui.Label("Water Exchange / Inlet", height=20)
-                self._control_float_row("flow_lph", "Flow L/h", 2000.0, "Apply", lambda: self._control_action("set_water_exchange", q_lph=self._control_float("flow_lph", 2000.0)))
-                with ui.HStack(height=28, spacing=6):
-                    ui.Label("Inflow", width=85)
-                    ui.Button("ON", clicked_fn=lambda: self._control_action("set_inflow", enabled=True))
-                    ui.Button("OFF", clicked_fn=lambda: self._control_action("set_inflow", enabled=False))
-                self._control_float_row("salinity_ppt", "Inlet Sal ppt", 0.2, "Apply", lambda: self._control_action("set_inlet_salinity", salinity_ppt=self._control_float("salinity_ppt", 0.2)))
-                self._control_float_row("turbidity_ntu", "Inlet Turb NTU", 1.0, "Apply", lambda: self._control_action("set_inlet_turbidity", turbidity_ntu=self._control_float("turbidity_ntu", 1.0)))
-                self._control_float_row("inlet_do", "Inlet DO", 9.0, "Apply", lambda: self._control_action("set_inlet_do", dissolved_oxygen_mg_l=self._control_float("inlet_do", 9.0)))
-                self._control_float_row("inlet_alk", "Inlet Alk", 120.0, "Apply", lambda: self._control_action("set_inlet_alkalinity", alkalinity_mg_l_as_caco3=self._control_float("inlet_alk", 120.0)))
+                    ui.Label("Water Exchange / Inlet", height=20)
+                    self._control_float_row("flow_lph", "Flow L/h", 2000.0, "Apply", lambda: self._control_action("set_water_exchange", q_lph=self._control_float("flow_lph", 2000.0)))
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Label("Inflow", width=85)
+                        ui.Button("ON", clicked_fn=lambda: self._control_action("set_inflow", enabled=True))
+                        ui.Button("OFF", clicked_fn=lambda: self._control_action("set_inflow", enabled=False))
+                    self._control_float_row("salinity_ppt", "Inlet Sal ppt", 0.2, "Apply", lambda: self._control_action("set_inlet_salinity", salinity_ppt=self._control_float("salinity_ppt", 0.2)))
+                    self._control_float_row("turbidity_ntu", "Inlet Turb NTU", 1.0, "Apply", lambda: self._control_action("set_inlet_turbidity", turbidity_ntu=self._control_float("turbidity_ntu", 1.0)))
+                    self._control_float_row("inlet_do", "Inlet DO", 9.0, "Apply", lambda: self._control_action("set_inlet_do", dissolved_oxygen_mg_l=self._control_float("inlet_do", 9.0)))
+                    self._control_float_row("inlet_alk", "Inlet Alk", 120.0, "Apply", lambda: self._control_action("set_inlet_alkalinity", alkalinity_mg_l_as_caco3=self._control_float("inlet_alk", 120.0)))
 
-                ui.Label("Filtration / Emergency", height=20)
-                with ui.HStack(height=28, spacing=6):
-                    ui.Label("Biofilter", width=85)
-                    ui.Button("ON", clicked_fn=lambda: self._control_action("set_biofilter", enabled=True))
-                    ui.Button("OFF", clicked_fn=lambda: self._control_action("set_biofilter", enabled=False))
-                    ui.Label("Mech", width=40)
-                    ui.Button("ON", clicked_fn=lambda: self._control_action("set_mechanical_filter", enabled=True, settle_h=0.35))
-                    ui.Button("OFF", clicked_fn=lambda: self._control_action("set_mechanical_filter", enabled=False))
-                with ui.HStack(height=28, spacing=6):
-                    ui.Button("O2 +1", clicked_fn=lambda: self._control_action("oxygen_boost", mg_l=1.0))
-                    ui.Button("CO2 +2", clicked_fn=lambda: self._control_action("co2_pulse", mg_l=2.0))
-                    ui.Button("Salt +0.3", clicked_fn=lambda: self._control_action("dose_salt", ppt=0.3))
-                    ui.Button("Turb +5", clicked_fn=lambda: self._control_action("add_turbidity", ntu=5.0))
+                    ui.Label("Filtration / Emergency", height=20)
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Label("Biofilter", width=85)
+                        ui.Button("ON", clicked_fn=lambda: self._control_action("set_biofilter", enabled=True))
+                        ui.Button("OFF", clicked_fn=lambda: self._control_action("set_biofilter", enabled=False))
+                        ui.Label("Mech", width=40)
+                        ui.Button("ON", clicked_fn=lambda: self._control_action("set_mechanical_filter", enabled=True, settle_h=0.35))
+                        ui.Button("OFF", clicked_fn=lambda: self._control_action("set_mechanical_filter", enabled=False))
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Button("O2 +1", clicked_fn=lambda: self._control_action("oxygen_boost", mg_l=1.0))
+                        ui.Button("CO2 +2", clicked_fn=lambda: self._control_action("co2_pulse", mg_l=2.0))
+                        ui.Button("Salt +0.3", clicked_fn=lambda: self._control_action("dose_salt", ppt=0.3))
+                        ui.Button("Turb +5", clicked_fn=lambda: self._control_action("add_turbidity", ntu=5.0))
 
-                ui.Label("Scenarios", height=20)
-                with ui.HStack(height=28, spacing=6):
-                    ui.Button("Baseline", clicked_fn=lambda: self._control_action("load_scenario", name="baseline"))
-                    ui.Button("Overfeed", clicked_fn=lambda: self._control_action("load_scenario", name="overfeed"))
-                    ui.Button("Pump Off", clicked_fn=lambda: self._control_action("load_scenario", name="pump_off"))
-                    ui.Button("Biofilter Off", clicked_fn=lambda: self._control_action("load_scenario", name="biofilter_off"))
+                    ui.Label("Scenarios", height=20)
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Button("Baseline", clicked_fn=lambda: self._control_action("load_scenario", name="baseline"))
+                        ui.Button("Overfeed", clicked_fn=lambda: self._control_action("load_scenario", name="overfeed"))
+                        ui.Button("Pump Off", clicked_fn=lambda: self._control_action("load_scenario", name="pump_off"))
+                        ui.Button("Biofilter Off", clicked_fn=lambda: self._control_action("load_scenario", name="biofilter_off"))
 
     def _control_float_row(self, key, label, default, button_label, clicked_fn):
         with ui.HStack(height=26, spacing=6):
@@ -1077,6 +1142,10 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._on_sensor_ui_update(None)
             except Exception:
                 pass
+            try:
+                self._on_actuator_ui_update(None, force=True)
+            except Exception:
+                pass
         else:
             error = result.get("error", status) if isinstance(result, dict) else status
             self._set_control_status(f"{action} failed: {error}")
@@ -1084,6 +1153,108 @@ class CreateSetupExtension(omni.ext.IExt):
     def _set_control_status(self, text):
         if self._control_status_label is not None:
             self._control_status_label.text = str(text)
+
+
+    def _create_actuator_window(self):
+        if not bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False))):
+            return
+        if self._aquacast_main is None:
+            return
+        if self._actuator_window is not None:
+            return
+
+        self._actuator_window = ui.Window("Aquacast Actuator Overview", width=560, height=360, visible=True)
+        self._refresh_actuator_tank_data()
+        self._build_actuator_window_contents()
+        self._register_actuator_window_menu()
+        self._actuator_update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+            self._on_actuator_ui_update,
+            name="aquacast_actuator_overview_ui",
+        )
+        self._on_actuator_ui_update(None, force=True)
+
+    def _register_actuator_window_menu(self):
+        if self._actuator_menu_items:
+            return
+        self._actuator_menu_items = [
+            MenuItemDescription(
+                name="Aquacast/Actuator Overview",
+                onclick_fn=self._show_actuator_window,
+            )
+        ]
+        omni.kit.menu.utils.add_menu_items(self._actuator_menu_items, name="Window")
+
+    def _show_actuator_window(self):
+        if self._actuator_window is None:
+            self._create_actuator_window()
+            return
+        self._actuator_window.visible = True
+        self._on_actuator_ui_update(None, force=True)
+
+    def _refresh_actuator_tank_data(self):
+        self._actuator_tanks, self._actuator_tank_labels = self._sensor_tank_window_data()
+
+    def _build_actuator_window_contents(self):
+        if self._actuator_window is None:
+            return
+        self._actuator_tank_dot_sets = {}
+        with self._actuator_window.frame:
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=8):
+                    ui.Label("Actuator Overview", height=22)
+                    self._actuator_status_label = ui.Label("Waiting for tank state", height=22)
+                    if not self._actuator_tanks:
+                        ui.Label("No tanks found", height=24)
+                        return
+                    for tank_path, tank_label in zip(self._actuator_tanks, self._actuator_tank_labels):
+                        with ui.VStack(height=72, spacing=4):
+                            ui.Label(str(tank_label), height=18)
+                            with ui.HStack(height=42, spacing=10):
+                                tank_dots = {}
+                                for key, label in self._WQ_ACTUATOR_ROWS:
+                                    with ui.VStack(width=88, spacing=2):
+                                        with ui.HStack(height=16):
+                                            ui.Label("", width=34)
+                                            dots = self._build_status_indicator(size=14)
+                                        ui.Label(label, height=18, alignment=ui.Alignment.CENTER)
+                                    tank_dots[key] = dots
+                                self._actuator_tank_dot_sets[tank_path] = tank_dots
+
+    def _on_actuator_ui_update(self, _event, force=False):
+        if self._actuator_window is None or self._aquacast_main is None:
+            return
+        now = time.monotonic()
+        interval = float(_get_runtime_config("TEMP_SENSOR_UPDATE_INTERVAL_SECONDS", 0.5) or 0.5)
+        if not force and now - self._actuator_last_update < max(0.05, interval):
+            return
+        self._actuator_last_update = now
+
+        previous_tanks = list(self._actuator_tanks)
+        self._refresh_actuator_tank_data()
+        if previous_tanks != self._actuator_tanks or not self._actuator_tank_dot_sets:
+            self._build_actuator_window_contents()
+
+        failures = 0
+        for tank_path in self._actuator_tanks:
+            try:
+                snapshot = self._aquacast_main.get_quality_snapshot(tank_path=tank_path)
+            except Exception:
+                snapshot = {}
+            if snapshot.get("status") != "ok":
+                failures += 1
+                snapshot = {}
+            for key, _label in self._WQ_ACTUATOR_ROWS:
+                self._set_status_indicator(
+                    self._actuator_tank_dot_sets.get(tank_path, {}).get(key, {}),
+                    snapshot.get(key) if key in snapshot else None,
+                )
+        if self._actuator_status_label is not None:
+            if not self._actuator_tanks:
+                self._actuator_status_label.text = "No tanks found"
+            elif failures:
+                self._actuator_status_label.text = f"{failures} tank state read failed"
+            else:
+                self._actuator_status_label.text = f"{len(self._actuator_tanks)} tank(s)"
 
 
     def _create_fish_window(self):
@@ -1189,27 +1360,28 @@ class CreateSetupExtension(omni.ext.IExt):
             self._fish_species_labels = ["(no species)"]
 
         with self._fish_window.frame:
-            with ui.VStack(spacing=6):
-                ui.Label("Fish Management", height=22)
-                with ui.HStack(height=26, spacing=6):
-                    ui.Label("Tank:", width=70)
-                    self._fish_tank_combo = ui.ComboBox(0, *self._fish_tank_labels)
-                with ui.HStack(height=26, spacing=6):
-                    ui.Label("Species:", width=70)
-                    self._fish_species_combo = ui.ComboBox(0, *self._fish_species_labels)
-                self._fish_count_label = ui.Label("Total 0/30", height=24)
-                with ui.HStack(height=26, spacing=6):
-                    ui.Label("Qty:", width=70)
-                    self._fish_qty_field = ui.IntField()
-                    try:
-                        self._fish_qty_field.model.set_value(1)
-                    except Exception:
-                        pass
-                with ui.HStack(height=30, spacing=6):
-                    self._fish_add_button = ui.Button("ADD", clicked_fn=self._on_fish_add_clicked)
-                    self._fish_delete_button = ui.Button("DELETE", clicked_fn=self._on_fish_delete_clicked)
-                self._fish_clear_button = ui.Button("Clear All", height=30, clicked_fn=self._on_fish_clear_clicked)
-                self._fish_status_label = ui.Label("스테이지/탱크 대기", height=42, word_wrap=True)
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=6):
+                    ui.Label("Fish Management", height=22)
+                    with ui.HStack(height=26, spacing=6):
+                        ui.Label("Tank:", width=70)
+                        self._fish_tank_combo = ui.ComboBox(0, *self._fish_tank_labels)
+                    with ui.HStack(height=26, spacing=6):
+                        ui.Label("Species:", width=70)
+                        self._fish_species_combo = ui.ComboBox(0, *self._fish_species_labels)
+                    self._fish_count_label = ui.Label("Total 0/30", height=24)
+                    with ui.HStack(height=26, spacing=6):
+                        ui.Label("Qty:", width=70)
+                        self._fish_qty_field = ui.IntField()
+                        try:
+                            self._fish_qty_field.model.set_value(1)
+                        except Exception:
+                            pass
+                    with ui.HStack(height=30, spacing=6):
+                        self._fish_add_button = ui.Button("ADD", clicked_fn=self._on_fish_add_clicked)
+                        self._fish_delete_button = ui.Button("DELETE", clicked_fn=self._on_fish_delete_clicked)
+                    self._fish_clear_button = ui.Button("Clear All", height=30, clicked_fn=self._on_fish_clear_clicked)
+                    self._fish_status_label = ui.Label("스테이지/탱크 대기", height=42, word_wrap=True)
 
     def _set_fish_button_enabled(self, button, enabled):
         if button is None:
@@ -1645,9 +1817,11 @@ class CreateSetupExtension(omni.ext.IExt):
             self._aquacast_main = None
         self._sub_fabric_delegate_changed = None
         self._sensor_update_sub = None
+        self._actuator_update_sub = None
         self._sensor_window = None
         self._wq_view_window = None
         self._control_window = None
+        self._actuator_window = None
         self._teardown_fish_window()
         if self._sensor_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._sensor_menu_items, "Window")
@@ -1658,6 +1832,9 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._control_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._control_menu_items, "Window")
             self._control_menu_items = []
+        if self._actuator_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._actuator_menu_items, "Window")
+            self._actuator_menu_items = []
         if self._aquacast_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._aquacast_menu_items, "Aquacast")
             self._aquacast_menu_items = []

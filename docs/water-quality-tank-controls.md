@@ -24,6 +24,18 @@ backend 미사용 local mode에서도 `WaterQualityController`가 `tank_path`별
 
 개별 sensor 선택 시에는 해당 sensor 담당 항목만 보인다.
 
+Sensor 패널에는 actuator 상태 표시도 있다. 초록 원은 ON, 빨간 원은 OFF, 회색 원은 상태값 없음/unknown이다.
+
+`Window > Aquacast/Actuator Overview` 패널에서도 모든 탱크의 actuator 상태를 한눈에 볼 수 있다. 이 패널은 탱크별 row에 Inlet, Outlet, Biofilter, Mech, Heater 상태를 같은 색상 원형 indicator로 표시한다.
+
+| Actuator | ON 판정 |
+| --- | --- |
+| Inlet | `inlet_enabled=True`, 즉 `inflow_enabled=True`이고 `q_makeup_lph > 0` |
+| Outlet | `outlet_enabled=True`, 즉 `inflow_enabled=True`이고 `flow_lph > 0` |
+| Biofilter | `biofilter_on=True` |
+| Mech | `mechanical_filter_on=True`, 즉 `turbidity_settle_h > 0` |
+| Heater | `heater_on=True`, 즉 `heater_power_w > 0` |
+
 ## Thermal Controls
 
 | UI | Action | 바뀌는 값 | 효과 |

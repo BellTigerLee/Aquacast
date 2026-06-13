@@ -112,7 +112,7 @@ class WaterQualityBackend:
             reading = model.sensor_reading(name).as_dict()
             reading["status"] = "ok"
             self._attach_tank_fields(reading, tank_key)
-            reading["sim_time_h"] = float(model.snapshot().get("sim_time_h", 0.0))
+            self._attach_actuator_fields(reading, model)
             return reading
 
     def all_sensors(self, tank_key: str | None = None) -> dict[str, Any]:
@@ -200,9 +200,27 @@ class WaterQualityBackend:
         for name in DEFAULT_SENSOR_NAMES:
             reading = model.sensor_reading(name).as_dict()
             self._attach_tank_fields(reading, tank_key)
-            reading["sim_time_h"] = float(model.snapshot().get("sim_time_h", 0.0))
+            self._attach_actuator_fields(reading, model)
             readings.append(reading)
         return readings
+
+    def _attach_actuator_fields(self, payload: dict[str, Any], model: Any) -> None:
+        snap = model.snapshot()
+        for key in (
+            "sim_time_h",
+            "inflow_enabled",
+            "inlet_enabled",
+            "outlet_enabled",
+            "biofilter_on",
+            "mechanical_filter_on",
+            "heater_on",
+            "flow_lph",
+            "q_makeup_lph",
+            "heater_power_w",
+            "turbidity_settle_h",
+        ):
+            if key in snap:
+                payload[key] = snap[key]
 
     def _attach_tank_fields(self, payload: dict[str, Any], tank_key: str | None) -> None:
         key = str(tank_key or "").strip()

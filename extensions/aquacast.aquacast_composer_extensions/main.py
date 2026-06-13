@@ -3365,6 +3365,7 @@ class WaterQualityController:
             return snap
         model = self._model_for_tank(tank_path, create=bool(tank_path))
         reading = self._sensor_reading(model, name, tank_path=tank_path)
+        reading.update(self._actuator_status_values(tank_path=tank_path))
         if tank_path and name != "inlet_reference":
             particle_reading = self._sample_particle_sensor(name, str(tank_path))
             if particle_reading is not None:
@@ -3375,6 +3376,25 @@ class WaterQualityController:
             reading["tank_path"] = str(tank_path)
             reading["tank_name"] = self._tank_label(str(tank_path))
         return reading
+
+    def _actuator_status_values(self, tank_path=None):
+        keys = (
+            "inflow_enabled",
+            "inlet_enabled",
+            "outlet_enabled",
+            "biofilter_on",
+            "mechanical_filter_on",
+            "heater_on",
+            "flow_lph",
+            "q_makeup_lph",
+            "heater_power_w",
+            "turbidity_settle_h",
+        )
+        try:
+            snap = self.snapshot(tank_path=tank_path)
+        except Exception:
+            return {}
+        return {key: snap[key] for key in keys if key in snap}
 
     def _sample_particle_sensor(self, sensor_name, tank_path):
         stage = omni.usd.get_context().get_stage()

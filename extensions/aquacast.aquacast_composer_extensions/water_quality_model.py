@@ -194,12 +194,21 @@ class WaterQualityModel:
             )
         except Exception:
             heat = {}
+        inflow_enabled = bool(self.params.get("inflow_enabled", True))
+        flow_lph = float(self.params.get("flow_lph", 0.0))
+        q_makeup_lph = float(self.params.get("q_makeup_lph", flow_lph))
+        heater_power_w = float(self.params.get("heater_power_w", self.params.get("heater_power", 0.0)))
+        turbidity_settle_h = float(self.params.get("turbidity_settle_h", 0.0))
         values.update(
             {
                 "biofilter_on": bool(self.params.get("biofilter_on", True)),
-                "inflow_enabled": bool(self.params.get("inflow_enabled", True)),
-                "flow_lph": float(self.params.get("flow_lph", 0.0)),
-                "q_makeup_lph": float(self.params.get("q_makeup_lph", self.params.get("flow_lph", 0.0))),
+                "inflow_enabled": inflow_enabled,
+                "inlet_enabled": bool(inflow_enabled and q_makeup_lph > 0.0),
+                "outlet_enabled": bool(inflow_enabled and flow_lph > 0.0),
+                "mechanical_filter_on": bool(turbidity_settle_h > 0.0),
+                "heater_on": bool(heater_power_w > 0.0),
+                "flow_lph": flow_lph,
+                "q_makeup_lph": q_makeup_lph,
                 "fish_count": float(self.params.get("fish_count", 0.0)),
                 "fish_weight_kg": float(self.params.get("fish_weight_kg", 0.0)),
                 "scenario": self._scenario_name,
@@ -217,7 +226,8 @@ class WaterQualityModel:
                 "r_nitrif_mg_l_h": float(self.last_derivatives.get("r_nitrif_mg_l_h", 0.0)),
                 "turbidity_source_ntu_h": float(self.last_derivatives.get("turbidity_source_ntu_h", 0.0)),
                 "baseline_feed_kg_h": float(self.last_feed_base_kg_h),
-                "heater_power_w": float(self.params.get("heater_power_w", self.params.get("heater_power", 0.0))),
+                "heater_power_w": heater_power_w,
+                "turbidity_settle_h": turbidity_settle_h,
                 "tank_radius_m": float(self.params.get("tank_radius_m", 1.2)),
                 "tank_water_height_m": float(self.params.get("tank_water_height_m", 2.21)),
                 "thermal_q_net_w": float(heat.get("q_net_w", 0.0)),
