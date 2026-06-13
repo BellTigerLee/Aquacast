@@ -31,18 +31,21 @@ MAX_FISH_PER_TANK = 30
 FISH_MANAGEMENT_UI_UPDATE_INTERVAL_SECONDS = 0.5
 ENABLE_FISH_POPULATION_CSV = True
 FISH_POPULATION_CSV_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/fish_population.csv"
+SYNC_WQ_STOCK_WITH_FISH_POPULATION = True
 FISH_SPECIES = [
     {
         "id": "salmon_1",
         "label": "Atlantic",
         "asset": DYNAMIC_FISH_SALMON_1_PATH,
         "scale": DYNAMIC_FISH_SALMON_1_SCALE,
+        "weight_kg": 1.0,
     },
     {
         "id": "salmon_2",
         "label": "Chinook",
         "asset": DYNAMIC_FISH_SALMON_2_PATH,
         "scale": DYNAMIC_FISH_SALMON_2_SCALE,
+        "weight_kg": 1.0,
     },
 ]
 
@@ -151,6 +154,7 @@ WQ_ENABLE_NO2 = False
 WQ_CONSTANTS_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_constants.json"
 WQ_FEED_RATE_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_feed_rate.json"
 WQ_SCENARIOS_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_scenarios.json"
+WQ_METRIC_THRESHOLDS_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_metric_thresholds.json"
 WQ_SCENARIO_NAME = "baseline"
 WQ_BACKEND_ENABLED = True
 WQ_BACKEND_URL = "http://127.0.0.1:8765"
@@ -195,6 +199,16 @@ WQ_WRITE_PARTICLE_PRIMVARS = False
 WQ_PARTICLE_UPDATE_INTERVAL_SECONDS = 1.0
 WQ_PARTICLE_FIELD_UPDATE_INTERVAL_SECONDS = 0.5
 WQ_VIEW_VARIABLE = "temperature"
+ENABLE_WQ_METRICS_DASHBOARD = True
+WQ_METRICS_DASHBOARD_UPDATE_INTERVAL_SECONDS = 0.5
+WQ_METRICS_DASHBOARD_HISTORY_SECONDS = 180.0
+WQ_METRICS_DASHBOARD_METRICS = ["dissolved_oxygen_mg_l", "tan_mg_l", "ph", "co2_mg_l"]
+WQ_METRIC_DASHBOARD_THRESHOLDS = {
+    "dissolved_oxygen_mg_l": {"value": 8.0, "mode": "min"},
+    "tan_mg_l": {"value": 2.0, "mode": "max"},
+    "ph": {"value": 8.5, "mode": "max"},
+    "co2_mg_l": {"value": 15.0, "mode": "max"},
+}
 
 # Practical operating thresholds for salmon/RAS-style water-quality views.
 # Units match snapshot/sensor keys: degC, mg/L, pH, mg/L as CaCO3, ppt, NTU.

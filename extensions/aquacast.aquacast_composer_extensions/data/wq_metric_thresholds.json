@@ -1,0 +1,18 @@
+{
+  "co2_mg_l": {
+    "mode": "max",
+    "value": 0.6000000238418579
+  },
+  "dissolved_oxygen_mg_l": {
+    "mode": "min",
+    "value": 10.0
+  },
+  "ph": {
+    "mode": "max",
+    "value": 8.5
+  },
+  "tan_mg_l": {
+    "mode": "max",
+    "value": 2.0
+  }
+}

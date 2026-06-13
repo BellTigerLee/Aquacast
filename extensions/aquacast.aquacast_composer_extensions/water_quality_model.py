@@ -186,6 +186,7 @@ class WaterQualityModel:
 
     def snapshot(self) -> dict[str, float | bool | str]:
         values: dict[str, float | bool | str] = self.state.as_dict()
+        derivative_values = self._current_derivatives()
         try:
             heat = thermal_dynamics.net_heat_w(
                 self.state.temperature_c,
@@ -212,19 +213,19 @@ class WaterQualityModel:
                 "fish_count": float(self.params.get("fish_count", 0.0)),
                 "fish_weight_kg": float(self.params.get("fish_weight_kg", 0.0)),
                 "scenario": self._scenario_name,
-                "feed_rate_kg_h": float(self.last_derivatives.get("feed_rate_kg_h", 0.0)),
-                "biomass_kg": float(self.last_derivatives.get("biomass_kg", 0.0)),
-                "fish_o2_mg_h": float(self.last_derivatives.get("fish_o2_mg_h", 0.0)),
-                "feed_o2_mg_h": float(self.last_derivatives.get("feed_o2_mg_h", 0.0)),
-                "total_o2_mg_h": float(self.last_derivatives.get("total_o2_mg_h", 0.0)),
-                "fish_co2_mg_h": float(self.last_derivatives.get("fish_co2_mg_h", 0.0)),
-                "feed_co2_mg_h": float(self.last_derivatives.get("feed_co2_mg_h", 0.0)),
-                "total_co2_mg_h": float(self.last_derivatives.get("total_co2_mg_h", 0.0)),
-                "fish_tan_kg_h": float(self.last_derivatives.get("fish_tan_kg_h", 0.0)),
-                "feed_tan_kg_h": float(self.last_derivatives.get("feed_tan_kg_h", 0.0)),
-                "total_tan_kg_h": float(self.last_derivatives.get("total_tan_kg_h", 0.0)),
-                "r_nitrif_mg_l_h": float(self.last_derivatives.get("r_nitrif_mg_l_h", 0.0)),
-                "turbidity_source_ntu_h": float(self.last_derivatives.get("turbidity_source_ntu_h", 0.0)),
+                "feed_rate_kg_h": float(derivative_values.get("feed_rate_kg_h", 0.0)),
+                "biomass_kg": float(derivative_values.get("biomass_kg", 0.0)),
+                "fish_o2_mg_h": float(derivative_values.get("fish_o2_mg_h", 0.0)),
+                "feed_o2_mg_h": float(derivative_values.get("feed_o2_mg_h", 0.0)),
+                "total_o2_mg_h": float(derivative_values.get("total_o2_mg_h", 0.0)),
+                "fish_co2_mg_h": float(derivative_values.get("fish_co2_mg_h", 0.0)),
+                "feed_co2_mg_h": float(derivative_values.get("feed_co2_mg_h", 0.0)),
+                "total_co2_mg_h": float(derivative_values.get("total_co2_mg_h", 0.0)),
+                "fish_tan_kg_h": float(derivative_values.get("fish_tan_kg_h", 0.0)),
+                "feed_tan_kg_h": float(derivative_values.get("feed_tan_kg_h", 0.0)),
+                "total_tan_kg_h": float(derivative_values.get("total_tan_kg_h", 0.0)),
+                "r_nitrif_mg_l_h": float(derivative_values.get("r_nitrif_mg_l_h", 0.0)),
+                "turbidity_source_ntu_h": float(derivative_values.get("turbidity_source_ntu_h", 0.0)),
                 "baseline_feed_kg_h": float(self.last_feed_base_kg_h),
                 "heater_power_w": heater_power_w,
                 "turbidity_settle_h": turbidity_settle_h,
@@ -237,6 +238,14 @@ class WaterQualityModel:
             }
         )
         return values
+
+    def _current_derivatives(self) -> dict[str, float]:
+        try:
+            self.last_feed_base_kg_h = self._baseline_feed_kg_h()
+            self.last_derivatives = dynamics.derivatives(self.state.as_dict(), self.params)
+        except Exception:
+            pass
+        return self.last_derivatives
 
     def sensor_reading(self, sensor_name: str) -> SensorReading:
         name = sensor_name if sensor_name in DEFAULT_SENSOR_NAMES else "mixed_tank_outlet"

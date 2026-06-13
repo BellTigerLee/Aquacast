@@ -140,6 +140,12 @@ class CreateSetupExtension(omni.ext.IExt):
         ("nh3_mg_l", "NH3"),
         ("nitrite_mg_l", "Nitrite"),
         ("nitrate_mg_l", "Nitrate"),
+        ("fish_count", "Fish"),
+        ("fish_weight_kg", "Mean kg"),
+        ("biomass_kg", "Biomass"),
+        ("fish_o2_mg_h", "Fish O2"),
+        ("fish_tan_kg_h", "Fish TAN"),
+        ("total_tan_kg_h", "Total TAN"),
     )
     _WQ_SENSOR_FIELD_KEYS = {
         "total": tuple(key for key, _label in _WQ_SENSOR_ROWS),
@@ -162,6 +168,55 @@ class CreateSetupExtension(omni.ext.IExt):
         "off": {"background_color": 0xFFE53935, "border_radius": 6},
         "unknown": {"background_color": 0xFF808080, "border_radius": 6},
     }
+    _METRIC_DASHBOARD_SPECS = (
+        {
+            "key": "dissolved_oxygen_mg_l",
+            "label": "Dissolved Oxygen",
+            "short": "DO",
+            "unit": "mg/L",
+            "default_threshold": 8.0,
+            "mode": "min",
+            "range": (0.0, 12.0),
+            "min_span": 0.5,
+            "color": 0xFF4EA7FF,
+        },
+        {
+            "key": "tan_mg_l",
+            "label": "Total Ammonia Nitrogen",
+            "short": "TAN",
+            "unit": "mg/L",
+            "default_threshold": 2.0,
+            "mode": "max",
+            "range": (0.0, 3.0),
+            "min_span": 0.05,
+            "color": 0xFFFFB74D,
+        },
+        {
+            "key": "ph",
+            "label": "pH",
+            "short": "pH",
+            "unit": "",
+            "default_threshold": 8.5,
+            "mode": "max",
+            "range": (5.0, 10.0),
+            "min_span": 0.2,
+            "color": 0xFFBA68C8,
+        },
+        {
+            "key": "co2_mg_l",
+            "label": "Carbon Dioxide",
+            "short": "CO2",
+            "unit": "mg/L",
+            "default_threshold": 15.0,
+            "mode": "max",
+            "range": (0.0, 25.0),
+            "min_span": 0.5,
+            "color": 0xFF81C784,
+        },
+    )
+    _METRIC_DASHBOARD_THRESHOLD_COLOR = 0xFFE53935
+    _METRIC_DASHBOARD_BACKGROUND_COLOR = 0xFF111820
+    _METRIC_DASHBOARD_GRID_COLOR = 0xFF263241
 
     def on_startup(self, _ext_id):
         """
@@ -221,6 +276,22 @@ class CreateSetupExtension(omni.ext.IExt):
         self._actuator_tanks = []
         self._actuator_tank_labels = []
         self._actuator_tank_dot_sets = {}
+        self._metrics_window = None
+        self._metrics_update_sub = None
+        self._metrics_menu_items = []
+        self._metrics_last_update = 0.0
+        self._metrics_tanks = []
+        self._metrics_tank_labels = []
+        self._metrics_tank_combo = None
+        self._metrics_tank_index = 0
+        self._metrics_status_label = None
+        self._metrics_chart_frames = {}
+        self._metrics_current_labels = {}
+        self._metrics_range_labels = {}
+        self._metrics_state_frames = {}
+        self._metrics_threshold_fields = {}
+        self._metrics_history = {}
+        self._metrics_thresholds = self._default_metric_thresholds()
         self._fish_window = None
         self._fish_update_sub = None
         self._fish_last_update = 0.0
@@ -368,6 +439,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._create_wq_view_window()
         self._create_control_window()
         self._create_actuator_window()
+        self._create_metrics_dashboard_window()
         self._create_fish_window()
 
         startup_time = \
@@ -718,6 +790,16 @@ class CreateSetupExtension(omni.ext.IExt):
             return f"{value:.2f}"
         if key in {"nh3_mg_l", "nitrite_mg_l", "nitrate_mg_l"}:
             return f"{value:.4f} mg/L"
+        if key == "fish_count":
+            return f"{value:.0f}"
+        if key == "fish_weight_kg":
+            return f"{value:.2f} kg"
+        if key == "biomass_kg":
+            return f"{value:.1f} kg"
+        if key == "fish_o2_mg_h":
+            return f"{value:.1f} mg/h"
+        if key in {"fish_tan_kg_h", "total_tan_kg_h"}:
+            return f"{value:.6f} kg/h"
         return str(reading.get(key, "--"))
 
     def _update_sensor_actuator_statuses(self, reading):
@@ -1257,6 +1339,392 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._actuator_status_label.text = f"{len(self._actuator_tanks)} tank(s)"
 
 
+    def _default_metric_thresholds(self):
+        configured = _get_runtime_config("WQ_METRIC_DASHBOARD_THRESHOLDS", {}) or {}
+        thresholds = {}
+        for spec in self._METRIC_DASHBOARD_SPECS:
+            key = spec["key"]
+            item = configured.get(key, {}) if isinstance(configured, dict) else {}
+            if not isinstance(item, dict):
+                item = {"value": item}
+            try:
+                value = float(item.get("value", spec["default_threshold"]))
+            except (TypeError, ValueError):
+                value = float(spec["default_threshold"])
+            mode = str(item.get("mode", spec["mode"])).strip().lower()
+            if mode not in {"min", "max"}:
+                mode = str(spec["mode"])
+            thresholds[key] = {"value": value, "mode": mode}
+        return thresholds
+
+    def _normalize_metric_thresholds(self, thresholds):
+        raw = thresholds.get("thresholds") if isinstance(thresholds, dict) and "thresholds" in thresholds else thresholds
+        raw = raw if isinstance(raw, dict) else {}
+        values = self._default_metric_thresholds()
+        for spec in self._METRIC_DASHBOARD_SPECS:
+            key = spec["key"]
+            item = raw.get(key, values[key])
+            if not isinstance(item, dict):
+                item = {"value": item, "mode": values[key].get("mode", spec["mode"])}
+            try:
+                value = float(item.get("value", values[key]["value"]))
+            except (TypeError, ValueError):
+                value = float(values[key]["value"])
+            mode = str(item.get("mode", values[key].get("mode", spec["mode"]))).strip().lower()
+            if mode not in {"min", "max"}:
+                mode = str(spec["mode"])
+            values[key] = {"value": value, "mode": mode}
+        return values
+
+    def _dashboard_metric_specs(self):
+        configured = _get_runtime_config(
+            "WQ_METRICS_DASHBOARD_METRICS",
+            [spec["key"] for spec in self._METRIC_DASHBOARD_SPECS],
+        )
+        configured_keys = {str(key) for key in configured} if isinstance(configured, (list, tuple, set)) else set()
+        specs = [spec for spec in self._METRIC_DASHBOARD_SPECS if not configured_keys or spec["key"] in configured_keys]
+        return specs or list(self._METRIC_DASHBOARD_SPECS)
+
+    def _load_metric_thresholds(self):
+        if self._aquacast_main and hasattr(self._aquacast_main, "get_water_quality_metric_thresholds"):
+            try:
+                result = self._aquacast_main.get_water_quality_metric_thresholds()
+                if isinstance(result, dict) and result.get("status") == "ok":
+                    return self._normalize_metric_thresholds(result.get("thresholds", {}))
+            except Exception as exc:
+                carb.log_warn(f"[test-Aquacast] Metric threshold load failed: {exc}")
+        return self._default_metric_thresholds()
+
+    def _create_metrics_dashboard_window(self):
+        quality_enabled = bool(_get_runtime_config("ENABLE_WATER_QUALITY", _get_runtime_config("ENABLE_WATER_QUALITY_SIM", False)))
+        if not quality_enabled or not bool(_get_runtime_config("ENABLE_WQ_METRICS_DASHBOARD", True)):
+            return
+        if self._aquacast_main is None:
+            return
+        if self._metrics_window is not None:
+            return
+
+        self._metrics_window = ui.Window("Aquacast Metrics Dashboard", width=760, height=780, visible=True)
+        self._metrics_thresholds = self._load_metric_thresholds()
+        self._refresh_metrics_tank_data()
+        self._build_metrics_dashboard_contents()
+        self._register_metrics_dashboard_menu()
+        self._metrics_update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+            self._on_metrics_dashboard_update,
+            name="aquacast_metrics_dashboard_ui",
+        )
+        self._on_metrics_dashboard_update(None, force=True)
+
+    def _register_metrics_dashboard_menu(self):
+        if self._metrics_menu_items:
+            return
+        self._metrics_menu_items = [
+            MenuItemDescription(
+                name="Aquacast/Metrics Dashboard",
+                onclick_fn=self._show_metrics_dashboard_window,
+            )
+        ]
+        omni.kit.menu.utils.add_menu_items(self._metrics_menu_items, name="Window")
+
+    def _show_metrics_dashboard_window(self):
+        if self._metrics_window is None:
+            self._create_metrics_dashboard_window()
+            return
+        self._metrics_window.visible = True
+        self._on_metrics_dashboard_update(None, force=True)
+
+    def _refresh_metrics_tank_data(self):
+        self._metrics_tanks, self._metrics_tank_labels = self._sensor_tank_window_data()
+        self._metrics_tank_index = self._clamp_index(self._metrics_tank_index, self._metrics_tanks)
+
+    def _selected_metrics_tank(self):
+        if not self._metrics_tanks:
+            return None
+        index = self._clamp_index(self._sensor_combo_index(self._metrics_tank_combo, self._metrics_tank_index), self._metrics_tanks)
+        self._metrics_tank_index = index
+        return self._metrics_tanks[index]
+
+    def _build_metrics_dashboard_contents(self):
+        if self._metrics_window is None:
+            return
+        self._metrics_chart_frames = {}
+        self._metrics_current_labels = {}
+        self._metrics_range_labels = {}
+        self._metrics_state_frames = {}
+        self._metrics_threshold_fields = {}
+        with self._metrics_window.frame:
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=8):
+                    ui.Label("Metrics Dashboard", height=24)
+                    with ui.HStack(height=28, spacing=6):
+                        ui.Label("Tank:", width=58)
+                        self._metrics_tank_index = self._clamp_index(self._metrics_tank_index, self._metrics_tank_labels)
+                        self._metrics_tank_combo = ui.ComboBox(self._metrics_tank_index, *(self._metrics_tank_labels or ["(no tanks)"]))
+                        ui.Button("Refresh", width=80, clicked_fn=lambda: self._refresh_metrics_dashboard(rebuild=True))
+                        ui.Button("Save Thresholds", width=130, clicked_fn=self._save_metric_thresholds)
+                    self._metrics_status_label = ui.Label("Waiting for water-quality data", height=24, word_wrap=True)
+                    for spec in self._dashboard_metric_specs():
+                        self._build_metric_dashboard_panel(spec)
+
+    def _build_metric_dashboard_panel(self, spec):
+        key = spec["key"]
+        threshold = self._metrics_thresholds.get(key, {"value": spec["default_threshold"], "mode": spec["mode"]})
+        with ui.ZStack(height=164):
+            ui.Rectangle(style={"background_color": 0xFF0B111A, "border_color": self._METRIC_DASHBOARD_GRID_COLOR, "border_width": 1})
+            with ui.VStack(spacing=4):
+                with ui.HStack(height=24, spacing=6):
+                    ui.Label(str(spec["label"]), width=210)
+                    self._metrics_current_labels[key] = ui.Label("--", width=140)
+                    self._metrics_range_labels[key] = ui.Label("range --", width=150)
+                    state_frame = ui.Frame(width=70, height=20)
+                    self._metrics_state_frames[key] = state_frame
+                with ui.HStack(height=28, spacing=6):
+                    mode_label = "Min" if threshold.get("mode", spec["mode"]) == "min" else "Max"
+                    ui.Label(f"{mode_label} threshold", width=120)
+                    field = ui.FloatField(width=92)
+                    try:
+                        field.model.set_value(float(threshold.get("value", spec["default_threshold"])))
+                    except Exception:
+                        pass
+                    self._metrics_threshold_fields[key] = field
+                    unit = str(spec.get("unit") or "")
+                    ui.Label(unit, width=48)
+                    ui.Button("Save", width=62, clicked_fn=self._save_metric_thresholds)
+                    ui.Label("red line = threshold", height=22)
+                chart_frame = ui.Frame(height=104)
+                self._metrics_chart_frames[key] = chart_frame
+
+    def _refresh_metrics_dashboard(self, rebuild=False):
+        self._refresh_metrics_tank_data()
+        if rebuild:
+            self._metrics_thresholds = self._load_metric_thresholds()
+            self._build_metrics_dashboard_contents()
+        self._on_metrics_dashboard_update(None, force=True)
+
+    def _save_metric_thresholds(self):
+        values = self._normalize_metric_thresholds(self._metrics_thresholds)
+        for spec in self._METRIC_DASHBOARD_SPECS:
+            key = spec["key"]
+            values[key] = {
+                "value": self._metric_threshold_value(spec),
+                "mode": values.get(key, {}).get("mode", spec["mode"]),
+            }
+        if self._aquacast_main and hasattr(self._aquacast_main, "set_water_quality_metric_thresholds"):
+            try:
+                result = self._aquacast_main.set_water_quality_metric_thresholds(values)
+            except Exception as exc:
+                result = {"status": "error", "error": str(exc)}
+        else:
+            result = {"status": "error", "error": "threshold API unavailable"}
+        if isinstance(result, dict) and result.get("status") == "ok":
+            self._metrics_thresholds = self._normalize_metric_thresholds(result.get("thresholds", values))
+            self._set_metrics_status("Thresholds saved")
+            self._on_metrics_dashboard_update(None, force=True)
+        else:
+            error = result.get("error", result.get("status", "unknown")) if isinstance(result, dict) else "unknown"
+            self._set_metrics_status(f"Threshold save failed: {error}")
+
+    def _on_metrics_dashboard_update(self, _event, force=False):
+        if self._metrics_window is None or self._aquacast_main is None:
+            return
+        now = time.monotonic()
+        interval = float(_get_runtime_config("WQ_METRICS_DASHBOARD_UPDATE_INTERVAL_SECONDS", 0.5) or 0.5)
+        if not force and now - self._metrics_last_update < max(0.05, interval):
+            return
+        self._metrics_last_update = now
+
+        previous_tanks = list(self._metrics_tanks)
+        previous_labels = list(self._metrics_tank_labels)
+        self._refresh_metrics_tank_data()
+        if previous_tanks != self._metrics_tanks or previous_labels != self._metrics_tank_labels:
+            self._build_metrics_dashboard_contents()
+
+        tank_path = self._selected_metrics_tank()
+        if not tank_path:
+            self._set_metrics_status("No tanks found")
+            return
+        try:
+            snapshot = self._aquacast_main.get_quality_snapshot(tank_path=tank_path)
+        except Exception as exc:
+            self._set_metrics_status(f"snapshot failed: {exc}")
+            return
+        if not isinstance(snapshot, dict) or snapshot.get("status") != "ok":
+            status = snapshot.get("status", "unknown") if isinstance(snapshot, dict) else "unknown"
+            self._set_metrics_status(f"snapshot unavailable: {status}")
+            return
+
+        for spec in self._dashboard_metric_specs():
+            key = spec["key"]
+            try:
+                value = float(snapshot.get(key, 0.0))
+            except (TypeError, ValueError):
+                value = 0.0
+            history = self._append_metric_history(tank_path, key, value, interval)
+            self._update_metric_panel(spec, value, history)
+        label = self._sensor_tank_label(tank_path)
+        self._set_metrics_status(f"Live trend: {label} | {len(self._dashboard_metric_specs())} metrics")
+
+    def _append_metric_history(self, tank_path, key, value, interval):
+        history_key = (str(tank_path or ""), str(key))
+        history = self._metrics_history.setdefault(history_key, [])
+        history.append(float(value))
+        history_seconds = float(_get_runtime_config("WQ_METRICS_DASHBOARD_HISTORY_SECONDS", 180.0) or 180.0)
+        limit = max(8, int(history_seconds / max(0.05, float(interval))))
+        if len(history) > limit:
+            del history[:len(history) - limit]
+        return history
+
+    def _update_metric_panel(self, spec, value, history):
+        key = spec["key"]
+        threshold = self._metric_threshold_value(spec)
+        label = self._metrics_current_labels.get(key)
+        if label is not None:
+            label.text = f"{spec['short']} {self._format_metric_value(spec, value)}"
+        state, color = self._metric_state(spec, value, threshold)
+        self._update_metric_state_frame(key, state, color)
+        y_min, y_max = self._metric_chart_range(spec, history, threshold)
+        range_label = self._metrics_range_labels.get(key)
+        if range_label is not None:
+            range_label.text = f"range {y_min:.2f} - {y_max:.2f}"
+        self._draw_metric_chart(spec, history, threshold, y_min, y_max, color)
+
+    def _metric_threshold_value(self, spec):
+        key = spec["key"]
+        field = self._metrics_threshold_fields.get(key)
+        if field is not None:
+            for attr in ("as_float", "get_value_as_float"):
+                try:
+                    model = field.model
+                    value = getattr(model, attr)
+                    return float(value() if callable(value) else value)
+                except Exception:
+                    pass
+        try:
+            return float(self._metrics_thresholds.get(key, {}).get("value", spec["default_threshold"]))
+        except (TypeError, ValueError):
+            return float(spec["default_threshold"])
+
+    def _metric_state(self, spec, value, threshold):
+        mode = self._metrics_thresholds.get(spec["key"], {}).get("mode", spec["mode"])
+        violated = value < threshold if mode == "min" else value > threshold
+        if violated:
+            return ("LOW" if mode == "min" else "HIGH"), 0xFFE53935
+        return "OK", 0xFF00C853
+
+    def _format_metric_value(self, spec, value):
+        unit = str(spec.get("unit") or "")
+        if spec["key"] == "ph":
+            return f"{value:.2f}"
+        return f"{value:.2f} {unit}".strip()
+
+    def _metric_chart_range(self, spec, history, threshold):
+        values = []
+        for value in history or []:
+            try:
+                values.append(float(value))
+            except (TypeError, ValueError):
+                pass
+        if not values:
+            values = [float(threshold)]
+        y_min = min(values)
+        y_max = max(values)
+        min_span = max(1e-6, float(spec.get("min_span", 0.1)))
+        if y_max - y_min < min_span:
+            center = (y_min + y_max) * 0.5
+            y_min = center - min_span * 0.5
+            y_max = center + min_span * 0.5
+        span = max(min_span, y_max - y_min)
+        pad = max(min_span * 0.25, span * 0.18)
+        return y_min - pad, y_max + pad
+
+    def _update_metric_state_frame(self, key, state, color):
+        frame = self._metrics_state_frames.get(key)
+        if frame is None:
+            return
+        with frame:
+            with ui.ZStack(height=20):
+                ui.Rectangle(style={"background_color": color, "border_radius": 4})
+                ui.Label(str(state), alignment=ui.Alignment.CENTER)
+
+    def _draw_metric_chart(self, spec, history, threshold, y_min, y_max, state_color):
+        frame = self._metrics_chart_frames.get(spec["key"])
+        if frame is None:
+            return
+        values = list(history or [])
+        if len(values) < 2:
+            values = values + values[:1]
+        if len(values) < 2:
+            values = [0.0, 0.0]
+        threshold_y = min(max(float(threshold), float(y_min)), float(y_max))
+        with frame:
+            with ui.ZStack(height=100):
+                ui.Rectangle(style={"background_color": self._METRIC_DASHBOARD_BACKGROUND_COLOR, "border_color": self._METRIC_DASHBOARD_GRID_COLOR, "border_width": 1})
+                self._plot_metric_line(values, y_min, y_max, spec.get("color", state_color), 98)
+                self._draw_metric_threshold_line(threshold_y, y_min, y_max, 98)
+
+    def _draw_metric_threshold_line(self, threshold, y_min, y_max, height):
+        span = max(1e-9, float(y_max) - float(y_min))
+        normalized = (float(threshold) - float(y_min)) / span
+        normalized = max(0.0, min(1.0, normalized))
+        top_height = max(0, int(round((1.0 - normalized) * max(1, int(height) - 2))))
+        bottom_height = max(0, int(height) - top_height - 2)
+        with ui.VStack(height=height):
+            if top_height > 0:
+                ui.Spacer(height=top_height)
+            ui.Rectangle(height=2, style={"background_color": self._METRIC_DASHBOARD_THRESHOLD_COLOR})
+            if bottom_height > 0:
+                ui.Spacer(height=bottom_height)
+
+    def _plot_metric_line(self, values, y_min, y_max, color, height):
+        plot_cls = getattr(ui, "Plot", None)
+        type_container = getattr(ui, "Type", None)
+        plot_type = getattr(type_container, "LINE", None) if type_container is not None else None
+        if plot_type is None:
+            plot_type = getattr(getattr(ui, "PlotType", None), "LINE", None)
+        if plot_cls is None or plot_type is None:
+            ui.Label("Plot widget unavailable", height=height)
+            return
+        safe_values = [float(value) for value in values]
+        style = {"color": color, "line_width": 2}
+        arg_sets = (
+            (plot_type, float(y_min), float(y_max), *safe_values),
+            (plot_type, float(y_min), float(y_max), safe_values),
+            (plot_type, float(y_min), float(y_max), len(safe_values), safe_values),
+            (plot_type, *safe_values),
+        )
+        kwarg_sets = (
+            {"height": height, "style": style},
+            {"height": height},
+            {},
+        )
+        for kwargs in kwarg_sets:
+            for args in arg_sets:
+                try:
+                    plot_cls(*args, **kwargs)
+                    return
+                except Exception:
+                    pass
+        ui.Label("Plot failed", height=height)
+
+    def _set_metrics_status(self, text):
+        if self._metrics_status_label is not None:
+            self._metrics_status_label.text = str(text)
+
+    def _teardown_metrics_dashboard_window(self):
+        self._metrics_update_sub = None
+        self._metrics_window = None
+        self._metrics_tank_combo = None
+        self._metrics_status_label = None
+        self._metrics_chart_frames = {}
+        self._metrics_current_labels = {}
+        self._metrics_range_labels = {}
+        self._metrics_state_frames = {}
+        self._metrics_threshold_fields = {}
+        if self._metrics_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._metrics_menu_items, "Window")
+            self._metrics_menu_items = []
+
+
     def _create_fish_window(self):
         if not bool(_get_runtime_config("ENABLE_FISH_MANAGEMENT_UI", True)):
             return
@@ -1395,6 +1863,24 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._fish_status_label is not None:
             self._fish_status_label.text = str(text)
 
+    def _fish_stock_status_suffix(self, result):
+        if not isinstance(result, dict):
+            return ""
+        stock = result.get("stock") or {}
+        status = str(result.get("stock_sync_status") or "")
+        if not stock:
+            return f" | WQ {status}" if status and status != "ok" else ""
+        try:
+            fish_count = float(stock.get("fish_count", 0.0))
+            biomass_kg = float(stock.get("biomass_kg", 0.0))
+            mean_weight_kg = float(stock.get("fish_weight_kg", 0.0))
+        except Exception:
+            return f" | WQ {status}" if status else ""
+        suffix = f" | WQ {fish_count:.0f} fish, {biomass_kg:.1f} kg, mean {mean_weight_kg:.2f} kg"
+        if status and status != "ok":
+            suffix += f", {status}"
+        return suffix
+
     def _on_fish_ui_update(self, _event, force=False):
         if self._fish_window is None or self._aquacast_main is None:
             return
@@ -1458,7 +1944,7 @@ class CreateSetupExtension(omni.ext.IExt):
             return
         added = int(result.get("added", 0))
         suffix = " (clamped at cap)" if result.get("clamped") else ""
-        self._set_fish_status(f"ADD {qty} -> {added} added{suffix}")
+        self._set_fish_status(f"ADD {qty} -> {added} added{suffix}{self._fish_stock_status_suffix(result)}")
         self._on_fish_ui_update(None, force=True)
 
     def _on_fish_delete_clicked(self):
@@ -1477,7 +1963,7 @@ class CreateSetupExtension(omni.ext.IExt):
             self._set_fish_status(f"DELETE 실패: {exc}")
             return
         removed = int(result.get("removed", 0))
-        status = "선택한 종 없음" if removed == 0 else f"DELETE {qty} -> {removed} removed"
+        status = "선택한 종 없음" if removed == 0 else f"DELETE {qty} -> {removed} removed{self._fish_stock_status_suffix(result)}"
         self._set_fish_status(status)
         self._on_fish_ui_update(None, force=True)
 
@@ -1491,7 +1977,7 @@ class CreateSetupExtension(omni.ext.IExt):
         except Exception as exc:
             self._set_fish_status(f"Clear 실패: {exc}")
             return
-        self._set_fish_status(f"Clear All -> {int(result.get('removed', 0))} removed")
+        self._set_fish_status(f"Clear All -> {int(result.get('removed', 0))} removed{self._fish_stock_status_suffix(result)}")
         self._on_fish_ui_update(None, force=True)
 
     def _teardown_fish_window(self):
@@ -1818,10 +2304,12 @@ class CreateSetupExtension(omni.ext.IExt):
         self._sub_fabric_delegate_changed = None
         self._sensor_update_sub = None
         self._actuator_update_sub = None
+        self._metrics_update_sub = None
         self._sensor_window = None
         self._wq_view_window = None
         self._control_window = None
         self._actuator_window = None
+        self._teardown_metrics_dashboard_window()
         self._teardown_fish_window()
         if self._sensor_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._sensor_menu_items, "Window")
@@ -1835,6 +2323,9 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._actuator_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._actuator_menu_items, "Window")
             self._actuator_menu_items = []
+        if self._metrics_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._metrics_menu_items, "Window")
+            self._metrics_menu_items = []
         if self._aquacast_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._aquacast_menu_items, "Aquacast")
             self._aquacast_menu_items = []

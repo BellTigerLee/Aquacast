@@ -34,6 +34,12 @@ import aquacast_db  # noqa: E402
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+DEFAULT_THRESHOLDS = {
+    "dissolved_oxygen_mg_l": {"value": 8.0, "mode": "min"},
+    "tan_mg_l": {"value": 2.0, "mode": "max"},
+    "ph": {"value": 8.5, "mode": "max"},
+    "co2_mg_l": {"value": 15.0, "mode": "max"},
+}
 
 
 class WaterQualityBackend:
@@ -44,6 +50,7 @@ class WaterQualityBackend:
         feed_rate_path: Path,
         scenarios_path: Path,
         scenario_name: str,
+        thresholds_path: Path | None = None,
     ):
         self.constants_path = constants_path
         self.feed_rate_path = feed_rate_path
@@ -53,6 +60,10 @@ class WaterQualityBackend:
         self.model = load_model(constants_path, feed_rate_path, scenarios_path, scenario_name)
         self._tank_models: dict[str, Any] = {}
         self._tank_ids: dict[str, str] = {}
+        self.thresholds_path = Path(
+            thresholds_path
+            or os.environ.get("AQUACAST_WQ_THRESHOLDS_PATH", str(BACKEND_ROOT / "wq_metric_thresholds.json"))
+        )
         self.kafka = KafkaPublisher()
         self.kafka.start()
 
@@ -74,6 +85,20 @@ class WaterQualityBackend:
             if not tank_key and self._tank_models:
                 snap["tank_snapshots"] = self._tank_snapshots()
             return snap
+
+    def thresholds(self) -> dict[str, Any]:
+        with self._lock:
+            return {"status": "ok", "thresholds": self._read_thresholds()}
+
+    def set_thresholds(self, thresholds: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            values = self._normalize_thresholds(thresholds)
+            self.thresholds_path.parent.mkdir(parents=True, exist_ok=True)
+            self.thresholds_path.write_text(
+                json.dumps(values, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            return {"status": "ok", "thresholds": values}
 
     def advance(self, real_dt_s: float, temperature_c: float | None = None) -> dict[str, Any]:
         with self._lock:
@@ -250,6 +275,36 @@ class WaterQualityBackend:
             break
         return re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-") or "tank"
 
+    def _read_thresholds(self) -> dict[str, Any]:
+        if self.thresholds_path.exists():
+            try:
+                return self._normalize_thresholds(json.loads(self.thresholds_path.read_text(encoding="utf-8")))
+            except Exception:
+                pass
+        return self._normalize_thresholds(DEFAULT_THRESHOLDS)
+
+    def _normalize_thresholds(self, thresholds: dict[str, Any] | None) -> dict[str, Any]:
+        raw = thresholds.get("thresholds") if isinstance(thresholds, dict) and "thresholds" in thresholds else thresholds
+        raw = raw if isinstance(raw, dict) else {}
+        normalized = {}
+        for key, default in DEFAULT_THRESHOLDS.items():
+            item = raw.get(key, default)
+            if isinstance(item, dict):
+                value = item.get("value", default["value"])
+                mode = item.get("mode", default["mode"])
+            else:
+                value = item
+                mode = default["mode"]
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                value = float(default["value"])
+            mode = str(mode or default["mode"]).strip().lower()
+            if mode not in {"min", "max"}:
+                mode = default["mode"]
+            normalized[key] = {"value": value, "mode": mode}
+        return normalized
+
 
 class RequestHandler(BaseHTTPRequestHandler):
     backend: WaterQualityBackend
@@ -261,6 +316,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/health":
                 self._write_json({"status": "ok", "service": "aquacast-water-quality"})
+            elif parsed.path == "/thresholds":
+                self._write_json(self.backend.thresholds())
             elif parsed.path == "/snapshot":
                 self._write_json(self.backend.snapshot(tank_key))
             elif parsed.path == "/sensor":
@@ -287,6 +344,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 )
             elif parsed.path == "/action":
                 self._write_json(self.backend.action(payload))
+            elif parsed.path == "/thresholds":
+                self._write_json(self.backend.set_thresholds(payload.get("thresholds", payload)))
             elif parsed.path == "/reset":
                 if payload.get("tank_path") or payload.get("tank_id"):
                     self._write_json(self.backend.action({"type": "reset", **payload}))

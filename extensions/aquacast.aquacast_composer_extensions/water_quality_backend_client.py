@@ -52,6 +52,12 @@ class WaterQualityBackendClient:
         self._snapshot = self._get("/snapshot", query or None)
         return dict(self._snapshot)
 
+    def thresholds(self) -> dict[str, Any]:
+        return self._get("/thresholds")
+
+    def set_thresholds(self, thresholds: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/thresholds", {"thresholds": dict(thresholds or {})})
+
     def reset(self, scenario_name: str | None = None, *, tank_path: str | None = None) -> dict[str, Any]:
         payload = {}
         if scenario_name:

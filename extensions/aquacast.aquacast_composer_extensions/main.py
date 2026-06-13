@@ -245,6 +245,7 @@ def start_water_quality_controller():
             return None
         _water_quality_controller = WaterQualityController()
         _water_quality_controller.start()
+        asyncio.ensure_future(_sync_water_quality_stock_after_frames(2))
     return _water_quality_controller
 
 
@@ -389,6 +390,79 @@ def get_quality_snapshot(tank_path=None):
     if _water_quality_controller is None:
         return {"status": "water quality controller is not running"}
     return _water_quality_controller.snapshot(tank_path=tank_path)
+
+
+_DEFAULT_WQ_METRIC_THRESHOLDS = {
+    "dissolved_oxygen_mg_l": {"value": 8.0, "mode": "min"},
+    "tan_mg_l": {"value": 2.0, "mode": "max"},
+    "ph": {"value": 8.5, "mode": "max"},
+    "co2_mg_l": {"value": 15.0, "mode": "max"},
+}
+
+
+def _normalize_metric_thresholds(thresholds=None):
+    configured = get_global_config("WQ_METRIC_DASHBOARD_THRESHOLDS", _DEFAULT_WQ_METRIC_THRESHOLDS)
+    defaults = configured if isinstance(configured, dict) else _DEFAULT_WQ_METRIC_THRESHOLDS
+    raw = thresholds.get("thresholds") if isinstance(thresholds, dict) and "thresholds" in thresholds else thresholds
+    raw = raw if isinstance(raw, dict) else {}
+    normalized = {}
+    for key, fallback in _DEFAULT_WQ_METRIC_THRESHOLDS.items():
+        default = defaults.get(key, fallback) if isinstance(defaults, dict) else fallback
+        item = raw.get(key, default)
+        if isinstance(item, dict):
+            value = item.get("value", default.get("value", fallback["value"]))
+            mode = item.get("mode", default.get("mode", fallback["mode"]))
+        else:
+            value = item
+            mode = default.get("mode", fallback["mode"]) if isinstance(default, dict) else fallback["mode"]
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = float(fallback["value"])
+        mode = str(mode or fallback["mode"]).strip().lower()
+        if mode not in {"min", "max"}:
+            mode = fallback["mode"]
+        normalized[key] = {"value": value, "mode": mode}
+    return normalized
+
+
+def _metric_thresholds_json_path():
+    default_path = Path(__file__).resolve().parent / "data" / "wq_metric_thresholds.json"
+    return Path(get_global_config("WQ_METRIC_THRESHOLDS_JSON_PATH", str(default_path))).expanduser()
+
+
+def _read_metric_thresholds_file():
+    path = _metric_thresholds_json_path()
+    if path.exists():
+        try:
+            return _normalize_metric_thresholds(json.loads(path.read_text(encoding="utf-8")))
+        except Exception as exc:
+            carb.log_warn(f"[Aquacast WQ] Failed to read metric thresholds {path}: {exc}")
+    return _normalize_metric_thresholds()
+
+
+def _write_metric_thresholds_file(thresholds):
+    values = _normalize_metric_thresholds(thresholds)
+    path = _metric_thresholds_json_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(values, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception as exc:
+        carb.log_warn(f"[Aquacast WQ] Failed to write metric thresholds {path}: {exc}")
+        return {"status": "error", "error": str(exc), "thresholds": values}
+    return {"status": "ok", "thresholds": values}
+
+
+def get_water_quality_metric_thresholds():
+    if _water_quality_controller is not None:
+        return _water_quality_controller.get_metric_thresholds()
+    return {"status": "ok", "thresholds": _read_metric_thresholds_file()}
+
+
+def set_water_quality_metric_thresholds(thresholds):
+    if _water_quality_controller is not None:
+        return _water_quality_controller.set_metric_thresholds(thresholds)
+    return _write_metric_thresholds_file(thresholds)
 
 
 def set_quality_view_variable(variable):
@@ -933,6 +1007,7 @@ def _reset_and_spawn_fish_entries(
             asset_path = str(entry.get("asset", ""))
             fish_scale = max(0.0, float(entry.get("scale", 1.0)))
             species_id = str(entry.get("species_id", "unknown"))
+            weight_kg = max(1e-9, float(entry.get("weight_kg", get_global_config("WQ_FISH_WEIGHT_KG", 1.0))))
             if not os.path.exists(asset_path):
                 carb.log_warn(f"[Aquacast] Dynamic fish asset missing; skipping path={asset_path}")
                 continue
@@ -960,6 +1035,7 @@ def _reset_and_spawn_fish_entries(
                     Gf.Vec3f(fish_scale, fish_scale, fish_scale)
                 )
                 fish_prim.SetCustomDataByKey("aquacast:species", species_id)
+                fish_prim.SetCustomDataByKey("aquacast:weight_kg", weight_kg)
 
                 asset_prim = stage.DefinePrim(asset_prim_path, "Xform")
                 asset_prim.SetActive(True)
@@ -984,12 +1060,17 @@ def _spawn_fish_in_tank(
 ) -> list[str]:
     if count <= 0:
         return []
+    species = _species_by_id()
     asset_choices = dynamic_fish_spawn.assign_assets(count, mix_ratio, seed)
     entries = [
         {
             "species_id": "salmon_1" if asset_index == 0 else "salmon_2",
             "asset": asset_paths[asset_index],
             "scale": salmon_scales[asset_index],
+            "weight_kg": species.get("salmon_1" if asset_index == 0 else "salmon_2", {}).get(
+                "weight_kg",
+                get_global_config("WQ_FISH_WEIGHT_KG", 1.0),
+            ),
         }
         for asset_index in asset_choices
     ]
@@ -1004,18 +1085,21 @@ def _spawn_fish_in_tank(
 
 def _default_fish_species():
     scale = float(get_global_config("DYNAMIC_FISH_SCALE", 1.0))
+    weight_kg = float(get_global_config("WQ_FISH_WEIGHT_KG", 1.0))
     return [
         {
             "id": "salmon_1",
             "label": "Atlantic",
             "asset": get_global_config("DYNAMIC_FISH_SALMON_1_PATH", "~/cs-project/assets/salmon_1.usd"),
             "scale": get_global_config("DYNAMIC_FISH_SALMON_1_SCALE", scale),
+            "weight_kg": weight_kg,
         },
         {
             "id": "salmon_2",
             "label": "Chinook",
             "asset": get_global_config("DYNAMIC_FISH_SALMON_2_PATH", "~/cs-project/assets/salmon_2.usd"),
             "scale": get_global_config("DYNAMIC_FISH_SALMON_2_SCALE", scale),
+            "weight_kg": weight_kg,
         },
     ]
 
@@ -1041,11 +1125,16 @@ def get_fish_species():
             scale = max(0.0, float(raw.get("scale", get_global_config("DYNAMIC_FISH_SCALE", 1.0))))
         except (TypeError, ValueError):
             scale = max(0.0, float(get_global_config("DYNAMIC_FISH_SCALE", 1.0)))
+        try:
+            weight_kg = max(1e-9, float(raw.get("weight_kg", raw.get("w_kg", get_global_config("WQ_FISH_WEIGHT_KG", 1.0)))))
+        except (TypeError, ValueError):
+            weight_kg = max(1e-9, float(get_global_config("WQ_FISH_WEIGHT_KG", 1.0)))
         normalized.append({
             "id": species_id,
             "label": label,
             "asset": dynamic_fish_spawn.resolve_asset_path(None, asset),
             "scale": scale,
+            "weight_kg": weight_kg,
         })
         seen.add(species_id)
 
@@ -1057,6 +1146,7 @@ def get_fish_species():
             "label": item["label"],
             "asset": dynamic_fish_spawn.resolve_asset_path(None, str(item["asset"])),
             "scale": max(0.0, float(item["scale"])),
+            "weight_kg": max(1e-9, float(item.get("weight_kg", get_global_config("WQ_FISH_WEIGHT_KG", 1.0)))),
         }
         for item in _default_fish_species()
     ]
@@ -1150,6 +1240,16 @@ def _species_for_fish_prim(fish_prim, species_items=None):
     return "unknown"
 
 
+def _weight_for_fish_prim(fish_prim, species_id, species_items=None):
+    try:
+        value = fish_prim.GetCustomDataByKey("aquacast:weight_kg")
+        if value is not None:
+            return max(1e-9, float(value))
+    except Exception:
+        pass
+    return _fish_species_weight_kg(species_id, species_items)
+
+
 def count_fish_in_tank(tank_path: str):
     stage = omni.usd.get_context().get_stage()
     species = get_fish_species()
@@ -1163,6 +1263,80 @@ def count_fish_in_tank(tank_path: str):
         species_id = _species_for_fish_prim(fish_prim, species)
         by_species[species_id] = by_species.get(species_id, 0) + 1
     return {"total": total, "by_species": by_species}
+
+
+def _fish_species_weight_kg(species_id, species_items=None):
+    species_items = species_items or get_fish_species()
+    default = max(1e-9, float(get_global_config("WQ_FISH_WEIGHT_KG", 1.0)))
+    for item in species_items:
+        if item.get("id") == species_id:
+            try:
+                return max(1e-9, float(item.get("weight_kg", default)))
+            except (TypeError, ValueError):
+                return default
+    return default
+
+
+def fish_stock_for_tank(tank_path: str):
+    species = get_fish_species()
+    by_species = {item["id"]: 0 for item in species}
+    total = 0
+    biomass_kg = 0.0
+    stage = omni.usd.get_context().get_stage()
+    if stage is not None:
+        for fish_prim in _iter_fish_prims_in_tank(stage, str(tank_path)):
+            total += 1
+            species_id = _species_for_fish_prim(fish_prim, species)
+            by_species[species_id] = by_species.get(species_id, 0) + 1
+            biomass_kg += _weight_for_fish_prim(fish_prim, species_id, species)
+    mean_weight_kg = biomass_kg / total if total > 0 else max(1e-9, float(get_global_config("WQ_FISH_WEIGHT_KG", 1.0)))
+    return {
+        "fish_count": float(total),
+        "fish_weight_kg": float(mean_weight_kg),
+        "biomass_kg": float(biomass_kg),
+        "by_species": by_species,
+    }
+
+
+def _sync_water_quality_stock_for_tank(tank_path: str):
+    stock = fish_stock_for_tank(str(tank_path))
+    if not bool(get_global_config("SYNC_WQ_STOCK_WITH_FISH_POPULATION", True)):
+        return {"status": "disabled", "stock": stock}
+    if _water_quality_controller is None:
+        return {"status": "water quality controller is not running", "stock": stock}
+    try:
+        result = execute_water_quality_action(
+            "set_stock",
+            tank_path=tank_path,
+            fish_count=stock["fish_count"],
+            fish_weight_kg=stock["fish_weight_kg"],
+        )
+    except Exception as exc:
+        carb.log_warn(f"[Aquacast] Fish/WQ stock sync failed tank={tank_path}: {exc}")
+        return {"status": "error", "error": str(exc), "stock": stock}
+    if isinstance(result, dict):
+        result = dict(result)
+        result["stock"] = stock
+        return result
+    return {"status": "ok", "stock": stock}
+
+
+def sync_water_quality_stock_for_tank(tank_path: str):
+    return _sync_water_quality_stock_for_tank(tank_path)
+
+
+def _sync_all_water_quality_stock_with_fish():
+    results = {}
+    for tank_path in list_fish_tanks():
+        results[tank_path] = _sync_water_quality_stock_for_tank(tank_path)
+    return results
+
+
+async def _sync_water_quality_stock_after_frames(frames=1):
+    app = omni.kit.app.get_app()
+    for _ in range(max(0, int(frames))):
+        await app.next_update_async()
+    _sync_all_water_quality_stock_with_fish()
 
 
 def _fish_population_csv_enabled():
@@ -1283,6 +1457,7 @@ def _fish_entries_from_counts(counts):
                 "species_id": species_id,
                 "asset": item["asset"],
                 "scale": item["scale"],
+                "weight_kg": item.get("weight_kg", get_global_config("WQ_FISH_WEIGHT_KG", 1.0)),
             })
     return entries
 
@@ -1381,6 +1556,7 @@ def add_fish(tank_path, species_id, count):
                 fish_prim = stage.DefinePrim(fish_path, "Xform")
                 fish_prim.SetActive(True)
                 fish_prim.SetCustomDataByKey("aquacast:species", str(item["id"]))
+                fish_prim.SetCustomDataByKey("aquacast:weight_kg", max(1e-9, float(item.get("weight_kg", get_global_config("WQ_FISH_WEIGHT_KG", 1.0)))))
                 for child in list(fish_prim.GetChildren()):
                     _remove_composed_child(stage, child.GetPath())
 
@@ -1405,6 +1581,9 @@ def add_fish(tank_path, species_id, count):
     if created:
         _fish_change_refresh()
         _persist_current_fish_population()
+        stock_result = _sync_water_quality_stock_for_tank(str(tank_path))
+        result["stock"] = stock_result.get("stock", {}) if isinstance(stock_result, dict) else {}
+        result["stock_sync_status"] = stock_result.get("status", "unknown") if isinstance(stock_result, dict) else "unknown"
     if result["clamped"]:
         result["status"] = "clamped"
     return result
@@ -1443,6 +1622,9 @@ def remove_fish(tank_path, species_id, count):
     if result["removed"]:
         _fish_change_refresh()
         _persist_current_fish_population()
+        stock_result = _sync_water_quality_stock_for_tank(str(tank_path))
+        result["stock"] = stock_result.get("stock", {}) if isinstance(stock_result, dict) else {}
+        result["stock_sync_status"] = stock_result.get("status", "unknown") if isinstance(stock_result, dict) else "unknown"
     return result
 
 
@@ -1463,6 +1645,9 @@ def clear_fish(tank_path):
     if result["removed"]:
         _fish_change_refresh()
         _persist_current_fish_population()
+        stock_result = _sync_water_quality_stock_for_tank(str(tank_path))
+        result["stock"] = stock_result.get("stock", {}) if isinstance(stock_result, dict) else {}
+        result["stock_sync_status"] = stock_result.get("status", "unknown") if isinstance(stock_result, dict) else "unknown"
     return result
 
 
@@ -1529,6 +1714,7 @@ class DynamicFishSpawner:
             if touched:
                 self._spawned_stage_key = stage_key
                 _fish_change_refresh()
+                _sync_all_water_quality_stock_with_fish()
             return
 
         default_count = int(get_global_config("DYNAMIC_FISH_COUNT_PER_TANK", 0))
@@ -1571,6 +1757,7 @@ class DynamicFishSpawner:
         if total:
             self._spawned_stage_key = stage_key
             _fish_change_refresh()
+            _sync_all_water_quality_stock_with_fish()
     def _discover_tanks(self, stage):
         waters = []
         configured = str(get_global_config("WATER_PRIM_PATH", "") or "").strip()
@@ -3509,6 +3696,28 @@ class WaterQualityController:
             }
         return snap
 
+    def get_metric_thresholds(self):
+        if self._using_backend and self._model is not None and hasattr(self._model, "thresholds"):
+            try:
+                result = self._model.thresholds()
+                if isinstance(result, dict) and result.get("status") == "ok":
+                    return {"status": "ok", "thresholds": _normalize_metric_thresholds(result.get("thresholds", {}))}
+            except Exception as exc:
+                carb.log_warn(f"[Aquacast WQ] Backend threshold load failed: {exc}")
+        return {"status": "ok", "thresholds": _read_metric_thresholds_file()}
+
+    def set_metric_thresholds(self, thresholds):
+        values = _normalize_metric_thresholds(thresholds)
+        if self._using_backend and self._model is not None and hasattr(self._model, "set_thresholds"):
+            try:
+                result = self._model.set_thresholds(values)
+                if isinstance(result, dict) and result.get("status") == "ok":
+                    _write_metric_thresholds_file(result.get("thresholds", values))
+                    return {"status": "ok", "thresholds": _normalize_metric_thresholds(result.get("thresholds", values))}
+            except Exception as exc:
+                carb.log_warn(f"[Aquacast WQ] Backend threshold save failed: {exc}")
+        return _write_metric_thresholds_file(values)
+
     def apply_control_action(self, payload):
         if self._model is None:
             return {"status": "water quality model is not ready"}
@@ -4190,7 +4399,16 @@ class WaterQualityController:
         water_prim = _find_water_prim_for_tank(stage, tank_path)
         if water_prim and water_prim.IsValid():
             parent = stage.GetPrimAtPath(water_prim.GetPath().GetParentPath())
-            return parent if parent and parent.IsValid() else water_prim
+            fallback = parent if parent and parent.IsValid() else water_prim
+            current = fallback
+            while current and current.IsValid() and current.GetPath() != Sdf.Path.absoluteRootPath:
+                sensors = stage.GetPrimAtPath(current.GetPath().AppendChild("Sensors"))
+                if sensors and sensors.IsValid():
+                    return current
+                if current.GetName().startswith("Fishtank_"):
+                    return current
+                current = current.GetParent()
+            return fallback
         prim = stage.GetPrimAtPath(tank_path)
         return prim if prim and prim.IsValid() else None
 

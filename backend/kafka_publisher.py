@@ -40,6 +40,7 @@ class KafkaPublisher:
         self.enabled = _truthy(env.get("AQUACAST_KAFKA_ENABLED"))
         self.bootstrap = env.get("AQUACAST_KAFKA_BOOTSTRAP_SERVERS", "localhost:29092")
         self.topic = env.get("AQUACAST_KAFKA_TOPIC", "aquacast.water_quality")
+        self.threshold_alert_topic = env.get("AQUACAST_KAFKA_THRESHOLD_ALERT_TOPIC", "aquacast.threshold_alert")
         self.tank_id = env.get("AQUACAST_KAFKA_TANK_ID", "tank-01")
         self.client_id = env.get("AQUACAST_KAFKA_CLIENT_ID", "aquacast-wq-backend")
         self.acks = env.get("AQUACAST_KAFKA_ACKS", "1")
@@ -48,12 +49,14 @@ class KafkaPublisher:
         self.delivery_timeout_ms = _int_env(env, "AQUACAST_KAFKA_DELIVERY_TIMEOUT_MS", 10000)
         self.max_buffer = _int_env(env, "AQUACAST_KAFKA_MAX_BUFFER_MESSAGES", 100000)
         self.flush_s = _float_env(env, "AQUACAST_KAFKA_FLUSH_ON_SHUTDOWN_SECONDS", 3.0)
+        self.threshold_alert_repeat_s = _float_env(env, "AQUACAST_THRESHOLD_ALERT_REPEAT_SECONDS", 60.0)
         self.db_enabled = not _truthy(env.get("AQUACAST_DB_DISABLED"))
         self.db_path = aquacast_db.db_path_from_env(env)
         self._producer: Any | None = None
         self._store: aquacast_db.WideMessageStore | None = None
         self._seq = 0
         self._dropped = 0
+        self._threshold_alert_state: dict[str, tuple[tuple[str, ...], int]] = {}
 
         if self.db_enabled:
             try:
@@ -95,13 +98,19 @@ class KafkaPublisher:
             log.error("[Aquacast Kafka] producer config failed (%s); inert", exc)
             self.enabled = False
             return
-        log.info("[Aquacast Kafka] producer ready -> %s topic=%s", self.bootstrap, self.topic)
+        log.info(
+            "[Aquacast Kafka] producer ready -> %s topic=%s threshold_topic=%s",
+            self.bootstrap,
+            self.topic,
+            self.threshold_alert_topic,
+        )
 
     def publish_state(self, backend: Any) -> None:
         event_time_ms = int(time.time() * 1000)
         try:
             readings = backend.all_sensors()["readings"]
-            sim_time_h = backend.snapshot().get("sim_time_h")
+            root_snapshot = backend.snapshot()
+            sim_time_h = root_snapshot.get("sim_time_h")
         except Exception as exc:
             log.warning("[Aquacast Kafka] could not read backend state: %s", exc)
             return
@@ -114,6 +123,7 @@ class KafkaPublisher:
         for reading in readings:
             tank_id = self._reading_tank_id(reading)
             self._publish_reading(reading, event_time_ms, reading.get("sim_time_h", sim_time_h), references.get(tank_id), tank_id)
+        self._publish_threshold_alerts(backend, root_snapshot, event_time_ms)
         if self._producer is not None:
             self._producer.poll(0)
 
@@ -156,6 +166,84 @@ class KafkaPublisher:
                 log.warning("[Aquacast Kafka] local queue full; dropped=%d", self._dropped)
         except Exception as exc:
             log.warning("[Aquacast Kafka] produce failed: %s", exc)
+
+    def _publish_threshold_alerts(self, backend: Any, root_snapshot: dict, event_time_ms: int) -> None:
+        try:
+            thresholds = backend.thresholds().get("thresholds", {})
+        except Exception as exc:
+            log.warning("[Aquacast Kafka] could not read thresholds: %s", exc)
+            return
+
+        active_tanks = set()
+        for snapshot in self._threshold_alert_snapshots(root_snapshot):
+            tank_id = str(snapshot.get("tank_id") or self.tank_id)
+            active_tanks.add(tank_id)
+            self._seq += 1
+            message = kafka_payload.build_threshold_alert(
+                snapshot,
+                thresholds,
+                tank_id=tank_id,
+                tank_name=str(snapshot.get("tank_name") or snapshot.get("tank_id") or tank_id),
+                tank_path=str(snapshot.get("tank_path") or ""),
+                event_time_ms=event_time_ms,
+                seq=self._seq,
+            )
+            if message is None:
+                self._threshold_alert_state.pop(tank_id, None)
+                continue
+            violated = tuple(sorted(str(name) for name in message.get("violated_parameter_names", [])))
+            if not self._should_emit_threshold_alert(tank_id, violated, event_time_ms):
+                continue
+            self._publish_threshold_alert(message)
+
+        for tank_id in list(self._threshold_alert_state):
+            if tank_id not in active_tanks:
+                self._threshold_alert_state.pop(tank_id, None)
+
+    def _threshold_alert_snapshots(self, root_snapshot: dict) -> list[dict]:
+        tank_snapshots = root_snapshot.get("tank_snapshots") if isinstance(root_snapshot, dict) else None
+        if isinstance(tank_snapshots, dict) and tank_snapshots:
+            return [dict(snapshot) for _key, snapshot in sorted(tank_snapshots.items()) if isinstance(snapshot, dict)]
+        return [dict(root_snapshot)] if isinstance(root_snapshot, dict) else []
+
+    def _should_emit_threshold_alert(self, tank_id: str, violated: tuple[str, ...], event_time_ms: int) -> bool:
+        previous = self._threshold_alert_state.get(tank_id)
+        repeat_ms = max(0, int(self.threshold_alert_repeat_s * 1000.0))
+        should_emit = True
+        if previous is not None:
+            previous_violated, previous_event_time_ms = previous
+            same_violation_set = previous_violated == violated
+            within_repeat_window = repeat_ms > 0 and event_time_ms - previous_event_time_ms < repeat_ms
+            should_emit = not (same_violation_set and within_repeat_window)
+        if should_emit:
+            self._threshold_alert_state[tank_id] = (violated, event_time_ms)
+        return should_emit
+
+    def _publish_threshold_alert(self, message: dict) -> None:
+        tank_id = str(message.get("tank_id") or self.tank_id)
+        message_key = kafka_payload.threshold_alert_key(tank_id)
+        if self._store is not None:
+            try:
+                self._store.insert_threshold_alert(message, topic=self.threshold_alert_topic, message_key=message_key)
+            except Exception as exc:
+                log.warning("[Aquacast DB] threshold alert insert failed: %s", exc)
+
+        if not self.enabled or self._producer is None:
+            return
+
+        try:
+            self._producer.produce(
+                self.threshold_alert_topic,
+                key=message_key,
+                value=kafka_payload.serialize(message),
+                on_delivery=self._on_delivery,
+            )
+        except BufferError:
+            self._dropped += 1
+            if self._dropped % 1000 == 1:
+                log.warning("[Aquacast Kafka] local queue full; dropped=%d", self._dropped)
+        except Exception as exc:
+            log.warning("[Aquacast Kafka] threshold alert produce failed: %s", exc)
 
     def _on_delivery(self, err: Any, msg: Any) -> None:
         del msg
