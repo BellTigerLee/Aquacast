@@ -7,6 +7,7 @@ import json
 
 
 # `do_mg_l` is a duplicate of `dissolved_oxygen_mg_l` in the model reading.
+# `reference_measurements` carries the same canonical keys for inlet_reference.
 MEASUREMENT_KEYS = (
     "temperature_c",
     "dissolved_oxygen_mg_l",
@@ -15,6 +16,8 @@ MEASUREMENT_KEYS = (
     "co2_mg_l",
     "ph",
     "alkalinity_mg_l_as_caco3",
+    "salinity_ppt",
+    "turbidity_ntu",
     "nitrite_mg_l",
     "nitrate_mg_l",
 )
@@ -22,6 +25,8 @@ MEASUREMENT_KEYS = (
 SENSOR_MEASUREMENT_KEYS = {
     "inlet_reference": (
         "alkalinity_mg_l_as_caco3",
+        "salinity_ppt",
+        "turbidity_ntu",
     ),
     "feed_zone_tan": (
         "tan_mg_l",
@@ -60,7 +65,8 @@ def build_message(
     event_time_ms: int,
     seq: int,
     sim_time_h: float | None = None,
-    schema_version: int = 1,
+    reference_reading: dict | None = None,
+    schema_version: int = 2,
     source: str = "aquacast-backend",
 ) -> dict | None:
     status = reading.get("status")
@@ -84,7 +90,20 @@ def build_message(
     }
     if sim_time_h is not None:
         message["sim_time_h"] = sim_time_h
+    reference_measurements = _reference_measurements(reference_reading)
+    if reference_measurements:
+        message["reference_sensor_name"] = "inlet_reference"
+        message["reference_measurements"] = reference_measurements
     return message
+
+
+def _reference_measurements(reference_reading: dict | None) -> dict:
+    if not isinstance(reference_reading, dict):
+        return {}
+    status = reference_reading.get("status")
+    if status is not None and status != "ok":
+        return {}
+    return {key: reference_reading[key] for key in MEASUREMENT_KEYS if key in reference_reading}
 
 
 def serialize(message: dict) -> bytes:

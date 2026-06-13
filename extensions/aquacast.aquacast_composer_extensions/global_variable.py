@@ -3,10 +3,10 @@ ENABLE_STAGE_STRUCTURE_CACHE = False
 STAGE_TOPOLOGY_INCLUDE_TRANSFORMS = False
 STAGE_TOPOLOGY_INCLUDE_BOUNDS = False
 STAGE_TOPOLOGY_TRANSFORM_PRECISION = 6
-STAGE_TOPOLOGY_JSON_PATH = "/home/user/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/stage_topology.json"
+STAGE_TOPOLOGY_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/stage_topology.json"
 
 ENABLE_AUTO_OPEN_STAGE = True
-AUTO_OPEN_STAGE_PATH = "/home/user/cs-project/assets/scene.usd"
+AUTO_OPEN_STAGE_PATH = "/home/netai-sys/cs-project/assets/scene.usd"
 
 ENABLE_FISH_SWIMMING = True
 FISH_NAME_PREFIX = "Fish_"
@@ -30,7 +30,7 @@ ENABLE_FISH_MANAGEMENT_UI = True
 MAX_FISH_PER_TANK = 30
 FISH_MANAGEMENT_UI_UPDATE_INTERVAL_SECONDS = 0.5
 ENABLE_FISH_POPULATION_CSV = True
-FISH_POPULATION_CSV_PATH = "/home/user/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/fish_population.csv"
+FISH_POPULATION_CSV_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/fish_population.csv"
 FISH_SPECIES = [
     {
         "id": "salmon_1",
@@ -148,9 +148,9 @@ TEMP_SENSOR_UPDATE_INTERVAL_SECONDS = 0.5
 ENABLE_WATER_QUALITY = True
 ENABLE_WATER_QUALITY_SIM = ENABLE_WATER_QUALITY
 WQ_ENABLE_NO2 = False
-WQ_CONSTANTS_JSON_PATH = "/home/user/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_constants.json"
-WQ_FEED_RATE_JSON_PATH = "/home/user/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_feed_rate.json"
-WQ_SCENARIOS_JSON_PATH = "/home/user/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_scenarios.json"
+WQ_CONSTANTS_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_constants.json"
+WQ_FEED_RATE_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_feed_rate.json"
+WQ_SCENARIOS_JSON_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/data/wq_scenarios.json"
 WQ_SCENARIO_NAME = "baseline"
 WQ_BACKEND_ENABLED = True
 WQ_BACKEND_URL = "http://127.0.0.1:8765"
@@ -162,6 +162,8 @@ WQ_INIT_DO = 9.0
 WQ_INIT_TAN = 0.3
 WQ_INIT_CO2 = 5.0
 WQ_INIT_ALK = 120.0
+WQ_INIT_SALINITY_PPT = 0.2
+WQ_INIT_TURBIDITY_NTU = 2.0
 WQ_TANK_VOLUME_L = 10000.0
 WQ_FISH_COUNT = 200
 WQ_FISH_WEIGHT_KG = 1.0
@@ -175,8 +177,16 @@ WQ_TAU_FEED_H = 4.0
 WQ_DO_MAXFI = 7.0
 WQ_DO_ZERO = 3.0
 WQ_DO_IN = 9.0
+WQ_TAN_IN_MG_L = 0.0
 WQ_CO2_EQ = 0.5
 WQ_ALK_IN = 120.0
+WQ_SALINITY_IN_PPT = 0.2
+WQ_TURBIDITY_IN_NTU = 1.0
+WQ_SOLIDS_PER_FEED = 0.275
+WQ_FISH_TAN_MG_KG_H = 2.5
+WQ_FISH_TSS_MG_KG_H = 1.5
+WQ_TURBIDITY_NTU_PER_MG_L_TSS = 0.35
+WQ_TURBIDITY_SETTLE_H = 0.35
 WQ_BIOFILTER_DEFAULT = True
 WQ_UPDATE_INTERVAL_SECONDS = 0.5
 WQ_LOG_INTERVAL_SECONDS = 5.0
@@ -187,7 +197,7 @@ WQ_PARTICLE_FIELD_UPDATE_INTERVAL_SECONDS = 0.5
 WQ_VIEW_VARIABLE = "temperature"
 
 # Practical operating thresholds for salmon/RAS-style water-quality views.
-# Units match snapshot/sensor keys: degC, mg/L, pH, mg/L as CaCO3.
+# Units match snapshot/sensor keys: degC, mg/L, pH, mg/L as CaCO3, ppt, NTU.
 WQ_THRESHOLDS = {
     "temperature": {
         "operating": (12.0, 15.0),
@@ -226,6 +236,16 @@ WQ_THRESHOLDS = {
         "operating_low": 70.0,
         "warning_low": 50.0,
         "critical_low": 10.0,
+    },
+    "salinity": {
+        "freshwater_high": 0.5,
+        "brackish_low": 1.0,
+        "brackish_high": 35.0,
+    },
+    "turbidity": {
+        "clear_high": 5.0,
+        "cloudy_high": 55.0,
+        "opaque_high": 515.0,
     },
 }
 
@@ -270,6 +290,20 @@ NH3_COLOR_STOPS = [
     (0.02, (0.00, 1.00, 0.12)),
     (0.05, (0.62, 1.00, 0.00)),
 ]
+SALINITY_COLOR_STOPS = [
+    (0.0, (0.05, 0.45, 1.00)),
+    (0.5, (0.10, 0.70, 0.95)),
+    (1.0, (0.18, 0.85, 0.75)),
+    (10.0, (0.65, 0.78, 0.35)),
+    (35.0, (0.95, 0.82, 0.25)),
+]
+TURBIDITY_COLOR_STOPS = [
+    (0.0, (0.02, 0.12, 0.18)),
+    (5.0, (0.12, 0.65, 0.85)),
+    (25.0, (0.78, 0.68, 0.38)),
+    (55.0, (0.62, 0.46, 0.28)),
+    (120.0, (0.28, 0.18, 0.10)),
+]
 WQ_VIEW_AMPLITUDE = {
     "temperature": 0.0,
     "dissolved_oxygen": 1.0,
@@ -277,6 +311,8 @@ WQ_VIEW_AMPLITUDE = {
     "co2": 1.0,
     "ph": 0.3,
     "alkalinity": 1.0,
+    "salinity": 0.2,
+    "turbidity": 1.0,
     "nh3": 1.0,
 }
 FEEDINGS_PRIM_PATH = "/Root/Group/Aquarium/AquariumComponents/FishTank/Feedings"

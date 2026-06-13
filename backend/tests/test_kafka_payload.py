@@ -18,6 +18,8 @@ _READING = {
     "tan_mg_l": 0.42,
     "co2_mg_l": 5.1,
     "alkalinity_mg_l_as_caco3": 120.0,
+    "salinity_ppt": 0.2,
+    "turbidity_ntu": 2.0,
     "ph": 7.21,
     "nh3_mg_l": 0.012,
     "nitrite_mg_l": 0.0,
@@ -39,7 +41,7 @@ def test_build_message_keeps_only_sensor_measurement_keys_and_drops_do_mg_l():
 
 def test_build_message_filters_each_known_sensor_to_its_responsible_measurements():
     expected_keys = {
-        "inlet_reference": {"alkalinity_mg_l_as_caco3"},
+        "inlet_reference": {"alkalinity_mg_l_as_caco3", "salinity_ppt", "turbidity_ntu"},
         "feed_zone_tan": {"tan_mg_l", "nh3_mg_l"},
         "fish_core_do": {"temperature_c", "ph"},
         "bottom_co2": {"co2_mg_l"},
@@ -67,6 +69,22 @@ def test_build_message_unknown_sensor_falls_back_to_all_canonical_measurements()
 
     assert set(message["measurements"]) == set(kp.MEASUREMENT_KEYS)
     assert "do_mg_l" not in message["measurements"]
+
+
+def test_build_message_includes_inlet_reference_measurements_when_supplied():
+    message = kp.build_message(
+        {**_READING, "sensor_name": "fish_core_do"},
+        tank_id="tank-01",
+        event_time_ms=0,
+        seq=1,
+        reference_reading={**_READING, "sensor_name": "inlet_reference"},
+    )
+
+    assert message["reference_sensor_name"] == "inlet_reference"
+    assert set(message["reference_measurements"]) == set(kp.MEASUREMENT_KEYS)
+    assert message["reference_measurements"]["salinity_ppt"] == 0.2
+    assert message["reference_measurements"]["turbidity_ntu"] == 2.0
+    assert "do_mg_l" not in message["reference_measurements"]
 
 def test_build_message_skips_explicit_non_ok_status():
     assert kp.build_message({**_READING, "status": "stale"}, tank_id="tank-01", event_time_ms=0, seq=1) is None

@@ -6,6 +6,8 @@
       "tan_mg_l": 0.3,
       "co2_mg_l": 5.0,
       "alkalinity_mg_l_as_caco3": 120.0,
+      "salinity_ppt": 0.2,
+      "turbidity_ntu": 2.0,
       "feed_pool_kg": 0.0
     }
   },
@@ -16,6 +18,8 @@
       "tan_mg_l": 0.3,
       "co2_mg_l": 5.0,
       "alkalinity_mg_l_as_caco3": 120.0,
+      "salinity_ppt": 0.2,
+      "turbidity_ntu": 2.0,
       "feed_pool_kg": 0.0
     }
   },
@@ -26,6 +30,8 @@
       "tan_mg_l": 0.35,
       "co2_mg_l": 6.5,
       "alkalinity_mg_l_as_caco3": 116.0,
+      "salinity_ppt": 0.2,
+      "turbidity_ntu": 3.5,
       "feed_pool_kg": 0.2
     }
   },
@@ -36,6 +42,8 @@
       "tan_mg_l": 0.45,
       "co2_mg_l": 8.0,
       "alkalinity_mg_l_as_caco3": 112.0,
+      "salinity_ppt": 0.2,
+      "turbidity_ntu": 5.0,
       "feed_pool_kg": 0.2
     },
     "params": {
@@ -50,6 +58,8 @@
       "tan_mg_l": 0.6,
       "co2_mg_l": 6.5,
       "alkalinity_mg_l_as_caco3": 118.0,
+      "salinity_ppt": 0.2,
+      "turbidity_ntu": 3.0,
       "feed_pool_kg": 0.2
     },
     "params": {
@@ -63,6 +73,8 @@
       "tan_mg_l": 0.45,
       "co2_mg_l": 7.0,
       "alkalinity_mg_l_as_caco3": 115.0,
+      "salinity_ppt": 0.2,
+      "turbidity_ntu": 8.0,
       "feed_pool_kg": 2.5
     }
   }

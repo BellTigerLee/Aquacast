@@ -7,6 +7,10 @@ def test_do_sat_decreases_with_temperature():
     assert d.do_saturation(10.0) > d.do_saturation(20.0) > d.do_saturation(25.0)
 
 
+def test_do_sat_decreases_with_salinity():
+    assert d.do_saturation(15.0, salinity_ppt=0.0) > d.do_saturation(15.0, salinity_ppt=35.0)
+
+
 def test_appetite_factor_clips():
     assert d.appetite_factor(2.0, do_zero=3.0, do_maxFI=7.0) == 0.0
     assert d.appetite_factor(7.5, do_zero=3.0, do_maxFI=7.0) == 1.0
@@ -69,6 +73,13 @@ def test_tan_production_scales_with_feed_and_pc():
     assert d.tan_production(2.0, protein_content=0.5, tan_per_feed=0.092) == 0.092
 
 
+def test_fish_metabolic_loads_zero_without_fish_or_feed():
+    loads = d.fish_metabolic_loads(14.0, 0.0, 1.0, 0.0, {})
+
+    assert loads["total_o2_mg_h"] == 0.0
+    assert loads["total_tan_kg_h"] == 0.0
+
+
 def test_derivatives_units_signs():
     state = {
         "temperature_c": 14.0,
@@ -83,3 +94,20 @@ def test_derivatives_units_signs():
     assert deriv["dissolved_oxygen_mg_l"] < 0.0
     assert deriv["tan_mg_l"] > 0.0
     assert deriv["co2_mg_l"] > 0.0
+    assert deriv["turbidity_ntu"] > 0.0
+
+
+def test_derivatives_salinity_moves_toward_inlet():
+    state = {
+        "temperature_c": 14.0,
+        "dissolved_oxygen_mg_l": 9.0,
+        "tan_mg_l": 0.1,
+        "co2_mg_l": 5.0,
+        "alkalinity_mg_l_as_caco3": 120.0,
+        "salinity_ppt": 1.0,
+        "turbidity_ntu": 2.0,
+        "feed_pool_kg": 0.0,
+    }
+    params = {"tank_volume_l": 1000.0, "flow_lph": 100.0, "salinity_in_ppt": 0.2}
+
+    assert d.derivatives(state, params)["salinity_ppt"] < 0.0

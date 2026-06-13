@@ -106,24 +106,34 @@ class KafkaPublisher:
             log.warning("[Aquacast Kafka] could not read backend state: %s", exc)
             return
 
+        references = {
+            self._reading_tank_id(reading): reading
+            for reading in readings
+            if reading.get("sensor_name") == "inlet_reference"
+        }
         for reading in readings:
-            self._publish_reading(reading, event_time_ms, sim_time_h)
+            tank_id = self._reading_tank_id(reading)
+            self._publish_reading(reading, event_time_ms, reading.get("sim_time_h", sim_time_h), references.get(tank_id), tank_id)
         if self._producer is not None:
             self._producer.poll(0)
 
-    def _publish_reading(self, reading: dict, event_time_ms: int, sim_time_h: Any) -> None:
+    def _reading_tank_id(self, reading: dict) -> str:
+        return str(reading.get("tank_id") or self.tank_id)
+
+    def _publish_reading(self, reading: dict, event_time_ms: int, sim_time_h: Any, reference: dict | None, tank_id: str) -> None:
         self._seq += 1
         message = kafka_payload.build_message(
             reading,
-            tank_id=self.tank_id,
+            tank_id=tank_id,
             event_time_ms=event_time_ms,
             seq=self._seq,
             sim_time_h=sim_time_h,
+            reference_reading=reference,
         )
         if message is None:
             return
 
-        message_key = kafka_payload.message_key(self.tank_id, reading["sensor_name"])
+        message_key = kafka_payload.message_key(tank_id, reading["sensor_name"])
         if self._store is not None:
             try:
                 self._store.insert_kafka_message(message, topic=self.topic)

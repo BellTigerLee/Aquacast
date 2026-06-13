@@ -279,10 +279,10 @@ def sample_water_temp_sensor(sensor_path=None, radius=None):
     return _water_temp_controller.sample_temperature_sensor(sensor_path, radius)
 
 
-def sample_water_quality_sensor(sensor_name=None):
+def sample_water_quality_sensor(sensor_name=None, tank_path=None):
     if _water_quality_controller is None:
         return {"status": "water quality controller is not running"}
-    return _water_quality_controller.sample_sensor(sensor_name)
+    return _water_quality_controller.sample_sensor(sensor_name, tank_path=tank_path)
 
 
 def sample_quality_sensor(sensor_path=None):
@@ -293,6 +293,56 @@ def sample_all_water_quality_sensors():
     if _water_quality_controller is None:
         return {"status": "water quality controller is not running", "readings": []}
     return {"status": "ok", "readings": _water_quality_controller.sample_all_sensors()}
+
+
+def list_water_quality_sensor_names():
+    names = get_global_config("WQ_SENSOR_PRIM_NAMES", list(water_quality_model.DEFAULT_SENSOR_NAMES))
+    sensor_names = [str(name) for name in names]
+    return ["total"] + [name for name in sensor_names if name != "total"]
+
+
+_WQ_ACTION_SCHEMAS = [
+    {"type": "feed", "args": {"mass_kg": "float"}, "description": "Add a feed pulse to the selected tank/model."},
+    {"type": "set_temperature", "args": {"temperature_c": "float"}, "description": "Set current water temperature."},
+    {"type": "set_heater", "args": {"power_w": "float"}, "description": "Set heater power in watts."},
+    {"type": "set_inlet_temperature", "args": {"temperature_c": "float"}, "description": "Set inlet water temperature."},
+    {"type": "set_water_exchange", "args": {"q_lph": "float"}, "description": "Set water exchange flow in L/h."},
+    {"type": "set_inflow", "args": {"enabled": "bool"}, "description": "Enable or disable inflow."},
+    {"type": "set_biofilter", "args": {"enabled": "bool"}, "description": "Enable or disable nitrification biofilter."},
+    {"type": "set_mechanical_filter", "args": {"enabled": "bool", "settle_h": "float optional"}, "description": "Enable or disable turbidity removal."},
+    {"type": "set_stock", "args": {"fish_count": "float", "fish_weight_kg": "float"}, "description": "Set fish count and mean weight."},
+    {"type": "set_inlet_salinity", "args": {"salinity_ppt": "float"}, "description": "Set inlet salinity."},
+    {"type": "set_inlet_turbidity", "args": {"turbidity_ntu": "float"}, "description": "Set inlet turbidity."},
+    {"type": "set_inlet_do", "args": {"dissolved_oxygen_mg_l": "float"}, "description": "Set inlet dissolved oxygen."},
+    {"type": "set_inlet_alkalinity", "args": {"alkalinity_mg_l_as_caco3": "float"}, "description": "Set inlet alkalinity."},
+    {"type": "set_aeration", "args": {"kla_o2_h": "float"}, "description": "Set oxygen aeration coefficient."},
+    {"type": "set_co2_stripping", "args": {"kla_co2_h": "float"}, "description": "Set CO2 stripping coefficient."},
+    {"type": "set_biofilter_capacity", "args": {"vtr_max_mg_l_h": "float"}, "description": "Set max TAN removal capacity."},
+    {"type": "set_nitrification_rate", "args": {"k_nitrif_h": "float"}, "description": "Set first-order nitrification rate."},
+    {"type": "dose_alkalinity", "args": {"mg_l_as_caco3": "float"}, "description": "Increase alkalinity by mg/L as CaCO3."},
+    {"type": "dose_salt", "args": {"ppt": "float"}, "description": "Increase salinity by ppt."},
+    {"type": "add_turbidity", "args": {"ntu": "float"}, "description": "Increase turbidity by NTU."},
+    {"type": "oxygen_boost", "args": {"mg_l": "float"}, "description": "Increase dissolved oxygen by mg/L."},
+    {"type": "co2_pulse", "args": {"mg_l": "float"}, "description": "Increase CO2 by mg/L."},
+    {"type": "load_scenario", "args": {"name": "str"}, "description": "Load a scenario preset."},
+]
+
+
+def list_water_quality_actions():
+    return [dict(item) for item in _WQ_ACTION_SCHEMAS]
+
+
+def execute_water_quality_action(action, tank_path=None, **params):
+    if _water_quality_controller is None:
+        return {"status": "water quality controller is not running"}
+    payload = dict(action) if isinstance(action, dict) else {"type": str(action)}
+    payload.update(params)
+    if tank_path is not None:
+        payload["tank_path"] = str(tank_path)
+    return _water_quality_controller.apply_control_action(payload)
+
+
+apply_water_quality_action = execute_water_quality_action
 
 
 def apply_feed(mass_kg):
@@ -335,10 +385,10 @@ def load_scenario(name):
     return _water_quality_controller.load_scenario(name)
 
 
-def get_quality_snapshot():
+def get_quality_snapshot(tank_path=None):
     if _water_quality_controller is None:
         return {"status": "water quality controller is not running"}
-    return _water_quality_controller.snapshot()
+    return _water_quality_controller.snapshot(tank_path=tank_path)
 
 
 def set_quality_view_variable(variable):
@@ -2514,6 +2564,7 @@ class WaterTempController:
         }
 
     def _restore_particle_set(self, particle_set):
+        self._water_prim = particle_set.get("water_prim")
         self._particles_prim = particle_set.get("particles_prim")
         self._particle_color_attr = particle_set.get("color_attr")
         self._particle_display_color_attr = particle_set.get("display_color_attr")
@@ -3249,6 +3300,8 @@ class WaterQualityController:
         "tan": "tan",
         "co2": "co2",
         "alkalinity": "alkalinity",
+        "salinity": "salinity",
+        "turbidity": "turbidity",
         "ph": "ph",
         "nh3": "nh3",
     }
@@ -3257,6 +3310,8 @@ class WaterQualityController:
         self._active = False
         self._update_sub = None
         self._model = None
+        self._tank_models = {}
+        self._model_config = {}
         self._last_update_time = None
         self._last_log_time = 0.0
         self._last_particle_write_time = 0.0
@@ -3268,7 +3323,9 @@ class WaterQualityController:
         self._view_variable_override = None
         self._using_backend = False
         self._particle_register_signature = None
+        self._particle_register_signatures = {}
         self._warned_geometry_mismatch = False
+        self._particle_sensor_used_fallback = False
 
     def start(self):
         self._active = True
@@ -3282,14 +3339,18 @@ class WaterQualityController:
         self._active = False
         self._update_sub = None
         self._model = None
+        self._tank_models = {}
+        self._model_config = {}
         self._particle_primvars = {}
         self._display_color_attr = None
         self._sphere_color_attrs = []
         self._particle_register_signature = None
+        self._particle_register_signatures = {}
         self._warned_geometry_mismatch = False
+        self._particle_sensor_used_fallback = False
         self._last_update_time = None
 
-    def sample_sensor(self, sensor_name=None):
+    def sample_sensor(self, sensor_name=None, tank_path=None):
         if self._model is None:
             return {"status": "water quality model is not ready"}
         name = str(sensor_name or get_global_config("WQ_DEFAULT_SENSOR_NAME", "mixed_tank_outlet") or "").strip()
@@ -3297,22 +3358,197 @@ class WaterQualityController:
             name = Path(name).name
         if not name:
             name = "mixed_tank_outlet"
-        reading = self._model.sensor_reading(name).as_dict()
+        if name.lower() in {"total", "all"}:
+            snap = self.snapshot(tank_path=tank_path)
+            snap["sensor_name"] = "total"
+            snap["sensor_path"] = "total"
+            return snap
+        model = self._model_for_tank(tank_path, create=bool(tank_path))
+        reading = self._sensor_reading(model, name, tank_path=tank_path)
+        if tank_path and name != "inlet_reference":
+            particle_reading = self._sample_particle_sensor(name, str(tank_path))
+            if particle_reading is not None:
+                reading.update(particle_reading)
         reading["status"] = "ok"
-        reading["sensor_path"] = self._sensor_path_for_name(name)
+        reading["sensor_path"] = self._sensor_path_for_name(name, tank_path=tank_path)
+        if tank_path:
+            reading["tank_path"] = str(tank_path)
+            reading["tank_name"] = self._tank_label(str(tank_path))
+        return reading
+
+    def _sample_particle_sensor(self, sensor_name, tank_path):
+        stage = omni.usd.get_context().get_stage()
+        temp_controller = globals().get("_water_temp_controller")
+        if stage is None or temp_controller is None or self._model is None:
+            return None
+        sensor_path = self._sensor_path_for_name(sensor_name, tank_path=tank_path)
+        if not sensor_path:
+            return None
+        sensor_prim = stage.GetPrimAtPath(sensor_path)
+        if not sensor_prim or not sensor_prim.IsValid():
+            return None
+        particle_set = self._particle_set_for_tank(stage, temp_controller, tank_path)
+        if not particle_set:
+            return None
+        positions = list(particle_set.get("positions", []) or [])
+        heat_weights = list(particle_set.get("heat_weights", []) or [])
+        if not positions or not heat_weights:
+            return None
+        try:
+            values = self._particle_values(heat_weights, positions, tank_path=tank_path)
+        except Exception as exc:
+            carb.log_warn(f"[Aquacast WQ] Particle sensor sample failed: {exc}")
+            return None
+        if not values:
+            return None
+        try:
+            sensor_pos = temp_controller._prim_world_center(stage, sensor_prim)
+        except Exception:
+            return None
+        samples = self._particle_sample_indices(sensor_pos, positions)
+        if not samples:
+            return None
+        reading = self._reading_from_particle_values(values, samples)
+        reading["sample_count"] = len(samples)
+        reading["used_fallback"] = bool(getattr(self, "_particle_sensor_used_fallback", False))
+        return reading
+
+    def _particle_set_for_tank(self, stage, temp_controller, tank_path):
+        target = _find_water_prim_for_tank(stage, tank_path)
+        if not target or not target.IsValid():
+            return None
+        target_path = target.GetPath().pathString
+        for particle_set in getattr(temp_controller, "_particle_sets", []) or []:
+            water_prim = particle_set.get("water_prim")
+            if water_prim and water_prim.IsValid() and water_prim.GetPath().pathString == target_path:
+                return particle_set
+        if getattr(temp_controller, "_water_prim", None) and temp_controller._water_prim.GetPath().pathString == target_path:
+            return {
+                "positions": getattr(temp_controller, "_particle_positions", []) or [],
+                "heat_weights": getattr(temp_controller, "_particle_heat_weights", []) or [],
+            }
+        return None
+
+    def _particle_sample_indices(self, sensor_pos, positions):
+        radius = max(0.001, float(get_global_config("TEMP_SENSOR_SAMPLE_RADIUS", 8.0)))
+        fallback_count = max(1, int(get_global_config("TEMP_SENSOR_FALLBACK_NEAREST_COUNT", 16)))
+        radius_sq = radius * radius
+        inside = []
+        nearest = []
+        for index, pos in enumerate(positions):
+            dx = float(pos[0]) - float(sensor_pos[0])
+            dy = float(pos[1]) - float(sensor_pos[1])
+            dz = float(pos[2]) - float(sensor_pos[2])
+            distance_sq = dx * dx + dy * dy + dz * dz
+            nearest.append((distance_sq, index))
+            if distance_sq <= radius_sq:
+                inside.append(index)
+        self._particle_sensor_used_fallback = False
+        if inside:
+            return inside
+        nearest.sort(key=lambda item: item[0])
+        self._particle_sensor_used_fallback = True
+        return [index for _distance_sq, index in nearest[:fallback_count]]
+
+    def _reading_from_particle_values(self, values, indices):
+        mapping = {
+            "temperature": "temperature_c",
+            "dissolved_oxygen": "dissolved_oxygen_mg_l",
+            "tan": "tan_mg_l",
+            "co2": "co2_mg_l",
+            "alkalinity": "alkalinity_mg_l_as_caco3",
+            "salinity": "salinity_ppt",
+            "turbidity": "turbidity_ntu",
+            "ph": "ph",
+            "nh3": "nh3_mg_l",
+        }
+        reading = {}
+        for source_key, target_key in mapping.items():
+            field = values.get(source_key) or []
+            selected = [float(field[index]) for index in indices if index < len(field)]
+            if selected:
+                reading[target_key] = sum(selected) / len(selected)
+        if "dissolved_oxygen_mg_l" in reading:
+            reading["do_mg_l"] = reading["dissolved_oxygen_mg_l"]
         return reading
 
     def sample_all_sensors(self):
         names = get_global_config("WQ_SENSOR_PRIM_NAMES", list(water_quality_model.DEFAULT_SENSOR_NAMES))
         return [self.sample_sensor(name) for name in names]
 
-    def snapshot(self):
+    def snapshot(self, tank_path=None):
         if self._model is None:
             return {"status": "water quality model is not ready"}
-        snap = self._model.snapshot()
-        snap["status"] = "ok"
+        model = self._model_for_tank(tank_path, create=bool(tank_path))
+        snap = self._snapshot_from_model(model, tank_path=tank_path)
         snap["view_variable"] = self._view_variable()
+        if not tank_path and not self._using_backend and self._tank_models:
+            snap["tank_snapshots"] = {
+                key: self._snapshot_from_model(model, tank_path=key)
+                for key, model in sorted(self._tank_models.items())
+            }
         return snap
+
+    def apply_control_action(self, payload):
+        if self._model is None:
+            return {"status": "water quality model is not ready"}
+        action = dict(payload or {})
+        kind = str(action.get("type", action.get("action", ""))).strip().lower()
+        if not kind:
+            return {"status": "error", "error": "missing action type"}
+        try:
+            tank_path = action.get("tank_path")
+            model = self._model_for_tank(tank_path, create=bool(tank_path))
+            if hasattr(model, "apply_control"):
+                result = model.apply_control(action)
+            else:
+                result = {"status": "error", "error": "model does not support control actions"}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc), "action": kind}
+
+        self._sync_control_action_to_temperature_controller(kind, action, result)
+        self._refresh_visuals_after_control_action(kind, action.get("tank_path"))
+        result = dict(result or {})
+        result.setdefault("status", "ok")
+        result["action"] = kind
+        if action.get("tank_path") is not None:
+            result["tank_path"] = str(action.get("tank_path"))
+        return result
+
+    def _sync_control_action_to_temperature_controller(self, kind, action, result):
+        controller = globals().get("_water_temp_controller")
+        if controller is None:
+            return
+        tank_path = action.get("tank_path")
+        if kind == "set_inflow" and hasattr(controller, "is_inflow_enabled"):
+            if tank_path:
+                return
+            try:
+                desired = bool(action.get("enabled", True))
+                if bool(controller.is_inflow_enabled()) != desired:
+                    controller.toggle_inflow()
+            except Exception:
+                pass
+        elif kind == "set_temperature":
+            try:
+                temperature_c = float(result.get("temperature_c", action.get("temperature_c", controller._T)))
+                if tank_path:
+                    self._set_tank_particle_temperature(str(tank_path), temperature_c)
+                    return
+                controller._T = temperature_c
+            except Exception:
+                pass
+
+    def _refresh_visuals_after_control_action(self, kind, tank_path=None):
+        self._last_particle_write_time = 0.0
+        self._last_particle_field_write_time = 0.0
+        stage = omni.usd.get_context().get_stage()
+        if stage is None or not _wq_particle_updates_enabled():
+            return
+        try:
+            self._write_particle_primvars(stage, time.time(), force=True)
+        except Exception as exc:
+            carb.log_warn(f"[Aquacast WQ] Visual refresh failed after action={kind}: {exc}")
 
     def apply_feed(self, mass_kg):
         if self._model is not None:
@@ -3353,6 +3589,10 @@ class WaterQualityController:
             "dissolved_o2": "dissolved_oxygen",
             "oxygen": "dissolved_oxygen",
             "alk": "alkalinity",
+            "salt": "salinity",
+            "salinity_ppt": "salinity",
+            "salidity": "salinity",
+            "turbidity_ntu": "turbidity",
         }
         value = aliases.get(value, value)
         if value in self._PARTICLE_PRIMVAR_NAMES:
@@ -3373,6 +3613,12 @@ class WaterQualityController:
         feed_rate_path = Path(get_global_config("WQ_FEED_RATE_JSON_PATH", str(base / "data" / "wq_feed_rate.json")))
         scenarios_path = Path(get_global_config("WQ_SCENARIOS_JSON_PATH", str(base / "data" / "wq_scenarios.json")))
         scenario_name = str(get_global_config("WQ_SCENARIO_NAME", "baseline") or "baseline")
+        self._model_config = {
+            "constants_path": constants_path,
+            "feed_rate_path": feed_rate_path,
+            "scenarios_path": scenarios_path,
+            "scenario_name": scenario_name,
+        }
         try:
             if bool(get_global_config("WQ_BACKEND_ENABLED", False)):
                 backend_url = str(get_global_config("WQ_BACKEND_URL", "http://127.0.0.1:8765") or "http://127.0.0.1:8765")
@@ -3382,11 +3628,13 @@ class WaterQualityController:
                 if bool(get_global_config("WQ_BACKEND_RESET_ON_CONNECT", False)):
                     client.reset(scenario_name)
                 self._model = client
+                self._tank_models = {}
                 self._using_backend = True
                 carb.log_info(f"[Aquacast WQ] Connected to backend={backend_url}")
             else:
                 self._model = water_quality_model.load_model(constants_path, feed_rate_path, scenarios_path, scenario_name)
-                self._apply_global_overrides()
+                self._tank_models = {}
+                self._apply_global_overrides(self._model)
                 self._using_backend = False
                 carb.log_info(f"[Aquacast WQ] Initialized scenario={scenario_name}")
         except Exception as exc:
@@ -3395,10 +3643,11 @@ class WaterQualityController:
             self._next_load_retry_time = time.time() + 1.0
             carb.log_warn(f"[Aquacast WQ] Failed to load water quality model: {exc}")
 
-    def _apply_global_overrides(self):
-        if self._model is None:
+    def _apply_global_overrides(self, model=None):
+        model = model or self._model
+        if model is None:
             return
-        params = self._model.params
+        params = model.params
         overrides = {
             "time_scale": "WQ_TIME_SCALE",
             "substep_h": "WQ_SUBSTEP_H",
@@ -3415,19 +3664,132 @@ class WaterQualityController:
             "do_maxFI": "WQ_DO_MAXFI",
             "do_zero": "WQ_DO_ZERO",
             "do_in": "WQ_DO_IN",
+            "tan_in_mg_l": "WQ_TAN_IN_MG_L",
             "co2_eq": "WQ_CO2_EQ",
             "alk_in": "WQ_ALK_IN",
+            "salinity_in_ppt": "WQ_SALINITY_IN_PPT",
+            "turbidity_in_ntu": "WQ_TURBIDITY_IN_NTU",
+            "solids_per_feed": "WQ_SOLIDS_PER_FEED",
+            "fish_tan_mg_kg_h": "WQ_FISH_TAN_MG_KG_H",
+            "fish_tss_mg_kg_h": "WQ_FISH_TSS_MG_KG_H",
+            "turbidity_ntu_per_mg_l_tss": "WQ_TURBIDITY_NTU_PER_MG_L_TSS",
+            "turbidity_settle_h": "WQ_TURBIDITY_SETTLE_H",
             "biofilter_on": "WQ_BIOFILTER_DEFAULT",
         }
         for param_name, config_name in overrides.items():
             value = get_global_config(config_name, None)
             if value is not None:
                 params[param_name] = value
-        state = self._model.state
+        state = model.state
         state.dissolved_oxygen_mg_l = float(get_global_config("WQ_INIT_DO", state.dissolved_oxygen_mg_l))
         state.tan_mg_l = float(get_global_config("WQ_INIT_TAN", state.tan_mg_l))
         state.co2_mg_l = float(get_global_config("WQ_INIT_CO2", state.co2_mg_l))
         state.alkalinity_mg_l_as_caco3 = float(get_global_config("WQ_INIT_ALK", state.alkalinity_mg_l_as_caco3))
+        state.salinity_ppt = float(get_global_config("WQ_INIT_SALINITY_PPT", state.salinity_ppt))
+        state.turbidity_ntu = float(get_global_config("WQ_INIT_TURBIDITY_NTU", state.turbidity_ntu))
+
+    def _new_local_model(self):
+        base = Path(__file__).resolve().parent
+        config = self._model_config or {}
+        constants_path = Path(config.get("constants_path") or get_global_config("WQ_CONSTANTS_JSON_PATH", str(base / "data" / "wq_constants.json")))
+        feed_rate_path = Path(config.get("feed_rate_path") or get_global_config("WQ_FEED_RATE_JSON_PATH", str(base / "data" / "wq_feed_rate.json")))
+        scenarios_path = Path(config.get("scenarios_path") or get_global_config("WQ_SCENARIOS_JSON_PATH", str(base / "data" / "wq_scenarios.json")))
+        scenario_name = str(config.get("scenario_name") or get_global_config("WQ_SCENARIO_NAME", "baseline") or "baseline")
+        model = water_quality_model.load_model(constants_path, feed_rate_path, scenarios_path, scenario_name)
+        self._apply_global_overrides(model)
+        return model
+
+    def _tank_key(self, tank_path):
+        return str(tank_path or "").strip()
+
+    def _model_for_tank(self, tank_path=None, create=False):
+        if self._model is None:
+            return None
+        key = self._tank_key(tank_path)
+        if self._using_backend or not key:
+            return self._model
+        if key not in self._tank_models:
+            if not create:
+                return self._model
+            self._tank_models[key] = self._new_local_model()
+        return self._tank_models[key]
+
+    def _snapshot_from_model(self, model, tank_path=None):
+        if model is None:
+            return {"status": "water quality model is not ready"}
+        if self._using_backend:
+            snap = model.snapshot(tank_path=self._tank_key(tank_path) or None)
+        else:
+            snap = model.snapshot()
+        snap = dict(snap or {})
+        snap["status"] = "ok"
+        key = self._tank_key(tank_path)
+        if key:
+            snap["tank_path"] = key
+            snap["tank_name"] = self._tank_label(key)
+        return snap
+
+    def _sensor_reading(self, model, name, tank_path=None):
+        if model is None:
+            return {"status": "water quality model is not ready"}
+        if self._using_backend:
+            return model.sensor_reading(name, tank_path=self._tank_key(tank_path) or None).as_dict()
+        return model.sensor_reading(name).as_dict()
+
+    def _particle_values(self, heat_weights, positions=None, tank_path=None):
+        model = self._model_for_tank(tank_path, create=bool(self._tank_key(tank_path)))
+        if model is None:
+            return {}
+        if self._using_backend:
+            return model.particle_values(heat_weights, positions, tank_path=self._tank_key(tank_path) or None)
+        return model.particle_values(heat_weights, positions)
+
+    def _registered_particle_values(self, tank_path=None):
+        model = self._model_for_tank(tank_path, create=bool(self._tank_key(tank_path)))
+        if model is None:
+            return {}
+        if self._using_backend:
+            return model.particle_values([], None, tank_path=self._tank_key(tank_path) or None)
+        if not hasattr(model, "registered_particle_values"):
+            return {}
+        return model.registered_particle_values()
+
+    def _register_particles(self, positions, heat_weights, tank_path=None):
+        model = self._model_for_tank(tank_path, create=bool(self._tank_key(tank_path)))
+        if model is None or not hasattr(model, "register_particles"):
+            return {"status": "error", "error": "model does not support particle registration"}
+        if self._using_backend:
+            return model.register_particles(positions, heat_weights, tank_path=self._tank_key(tank_path) or None)
+        return model.register_particles(positions, heat_weights)
+
+    def _current_particle_tank_path(self, temp_controller):
+        water_prim = getattr(temp_controller, "_water_prim", None)
+        if water_prim and water_prim.IsValid():
+            return water_prim.GetPath().pathString
+        return ""
+
+    def _set_tank_particle_temperature(self, tank_path, temperature_c):
+        controller = globals().get("_water_temp_controller")
+        if controller is None:
+            return
+        target_path = self._tank_key(tank_path)
+        stage = omni.usd.get_context().get_stage()
+        if stage is not None and target_path:
+            water_prim = _find_water_prim_for_tank(stage, target_path)
+            if water_prim and water_prim.IsValid():
+                target_path = water_prim.GetPath().pathString
+        for particle_set in getattr(controller, "_particle_sets", []) or []:
+            water_prim = particle_set.get("water_prim")
+            if not water_prim or not water_prim.IsValid() or water_prim.GetPath().pathString != target_path:
+                continue
+            count = len(particle_set.get("temperatures", []) or particle_set.get("heat_weights", []) or [])
+            particle_set["temperatures"] = [float(temperature_c)] * count
+            if self._current_particle_tank_path(controller) == target_path:
+                controller._particle_temperatures = list(particle_set["temperatures"])
+            return
+        if self._current_particle_tank_path(controller) == target_path:
+            count = len(getattr(controller, "_particle_temperatures", []) or getattr(controller, "_particle_heat_weights", []) or [])
+            controller._particle_temperatures = [float(temperature_c)] * count
 
     def _on_update(self, _event):
         if not self._active:
@@ -3463,6 +3825,9 @@ class WaterQualityController:
             self._ensure_particles_registered(temp_controller)
 
         state = self._model.advance(dt)
+        if not self._using_backend:
+            for tank_model in list(self._tank_models.values()):
+                tank_model.advance(dt)
 
         if temp_controller is not None:
             try:
@@ -3498,16 +3863,20 @@ class WaterQualityController:
         if not positions:
             return
         heat_weights = getattr(temp_controller, "_particle_heat_weights", None) or []
+        tank_path = self._current_particle_tank_path(temp_controller)
         signature = (
+            tank_path,
             len(positions),
             tuple(round(float(value), 4) for value in positions[0]),
             tuple(round(float(value), 4) for value in positions[-1]),
         )
-        if self._particle_register_signature == signature:
+        signature_key = tank_path or "__default__"
+        if self._particle_register_signatures.get(signature_key) == signature:
             return
         try:
-            result = self._model.register_particles(positions, heat_weights)
+            result = self._register_particles(positions, heat_weights, tank_path=tank_path or None)
             self._particle_register_signature = signature
+            self._particle_register_signatures[signature_key] = signature
             carb.log_info(
                 f"[Aquacast WQ] Registered backend temperature particles "
                 f"count={result.get('count', len(positions))} graph={result.get('graph_hash', '')}"
@@ -3608,10 +3977,13 @@ class WaterQualityController:
         if not self._particle_primvars and not self._sphere_color_attrs and self._display_color_attr is None:
             return
 
-        if not getattr(self, "_writing_particle_set", False) and hasattr(self._model, "registered_particle_values"):
-            values = self._model.registered_particle_values()
+        tank_path = self._current_particle_tank_path(temp_controller)
+        if not getattr(self, "_writing_particle_set", False):
+            values = self._registered_particle_values(tank_path=tank_path or None)
+            if not values:
+                values = self._particle_values(heat_weights, positions, tank_path=tank_path or None)
         else:
-            values = self._model.particle_values(heat_weights, positions)
+            values = self._particle_values(heat_weights, positions, tank_path=tank_path or None)
         temperature_values = values.get("temperature") or []
         if temperature_values:
             temp_controller._particle_temperatures = [float(value) for value in temperature_values]
@@ -3750,6 +4122,10 @@ class WaterQualityController:
             "dissolved_o2": "dissolved_oxygen",
             "oxygen": "dissolved_oxygen",
             "alk": "alkalinity",
+            "salt": "salinity",
+            "salinity_ppt": "salinity",
+            "salidity": "salinity",
+            "turbidity_ntu": "turbidity",
         }
         value = aliases.get(value, value)
         if value not in self._PARTICLE_PRIMVAR_NAMES:
@@ -3764,6 +4140,8 @@ class WaterQualityController:
             "co2": "CO2_COLOR_STOPS",
             "ph": "PH_COLOR_STOPS",
             "alkalinity": "ALK_COLOR_STOPS",
+            "salinity": "SALINITY_COLOR_STOPS",
+            "turbidity": "TURBIDITY_COLOR_STOPS",
             "nh3": "NH3_COLOR_STOPS",
         }.get(view, "TEMP_COLOR_STOPS")
         try:
@@ -3771,16 +4149,36 @@ class WaterQualityController:
         except Exception:
             return []
 
-    def _sensor_path_for_name(self, sensor_name):
+    def _sensor_path_for_name(self, sensor_name, tank_path=None):
+        stage = omni.usd.get_context().get_stage()
+        if stage is not None and tank_path:
+            tank_root = self._tank_root_prim(stage, str(tank_path))
+            if tank_root and tank_root.IsValid():
+                for prim in Usd.PrimRange(tank_root):
+                    if prim and prim.IsValid() and prim.GetName() == sensor_name:
+                        return prim.GetPath().pathString
         for path in _get_topology_paths_by_name(sensor_name):
             return path
         suffix = f"/{sensor_name}"
-        stage = omni.usd.get_context().get_stage()
         if stage is not None:
             for prim in stage.Traverse():
                 if prim and prim.IsValid() and prim.GetPath().pathString.endswith(suffix):
                     return prim.GetPath().pathString
         return ""
+
+    def _tank_root_prim(self, stage, tank_path):
+        water_prim = _find_water_prim_for_tank(stage, tank_path)
+        if water_prim and water_prim.IsValid():
+            parent = stage.GetPrimAtPath(water_prim.GetPath().GetParentPath())
+            return parent if parent and parent.IsValid() else water_prim
+        prim = stage.GetPrimAtPath(tank_path)
+        return prim if prim and prim.IsValid() else None
+
+    def _tank_label(self, tank_path):
+        path = str(tank_path or "")
+        if path.endswith("/Water") and "/" in path.rstrip("/"):
+            return path.rsplit("/", 1)[0].rsplit("/", 1)[-1]
+        return path.rsplit("/", 1)[-1] or path
 
     def _maybe_log(self, now, state):
         interval = float(get_global_config("WQ_LOG_INTERVAL_SECONDS", 5.0))
@@ -3795,6 +4193,8 @@ class WaterQualityController:
             f"TAN={snapshot.get('tan_mg_l', 0.0):.3f} mg/L, "
             f"CO2={snapshot.get('co2_mg_l', 0.0):.2f} mg/L, "
             f"Alk={snapshot.get('alkalinity_mg_l_as_caco3', 0.0):.1f} mg/L, "
+            f"Sal={snapshot.get('salinity_ppt', 0.0):.2f} ppt, "
+            f"Turb={snapshot.get('turbidity_ntu', 0.0):.1f} NTU, "
             f"pH={snapshot.get('ph', 0.0):.2f}, NH3={snapshot.get('nh3_mg_l', 0.0):.4f} mg/L, "
             f"view={self._view_variable()}"
         )

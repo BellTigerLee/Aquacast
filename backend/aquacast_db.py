@@ -57,6 +57,7 @@ def init_db(db_path: Path | str, *, drop: bool = False) -> None:
             conn.execute(f"DROP TABLE IF EXISTS {WIDE_TABLE}")
             conn.execute("DROP TABLE IF EXISTS water_quality_kafka_wide")
         conn.executescript(_create_schema_sql())
+        _ensure_schema_columns(conn)
         conn.commit()
 
 
@@ -252,6 +253,21 @@ CREATE INDEX IF NOT EXISTS idx_{WIDE_TABLE}_event_time_ms
 CREATE INDEX IF NOT EXISTS idx_{WIDE_TABLE}_tank_time
     ON {WIDE_TABLE}(tank_id, event_time_ms);
 """
+
+
+def _ensure_schema_columns(conn: sqlite3.Connection) -> None:
+    existing = {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({WIDE_TABLE})").fetchall()
+    }
+    for key in SENSOR_COLUMNS:
+        if key not in existing:
+            conn.execute(f"ALTER TABLE {WIDE_TABLE} ADD COLUMN {key} BOOLEAN NOT NULL DEFAULT FALSE")
+            existing.add(key)
+    for key in kafka_payload.MEASUREMENT_KEYS:
+        if key not in existing:
+            conn.execute(f"ALTER TABLE {WIDE_TABLE} ADD COLUMN {key} REAL")
+            existing.add(key)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Initialize Aquacast SQLite schema")
