@@ -67,6 +67,19 @@ LOAD_KEYS = (
     "turbidity_source_ntu_h",
 )
 
+ACTUATOR_STATE_KEYS = (
+    "inflow_enabled",
+    "inlet_enabled",
+    "outlet_enabled",
+    "biofilter_on",
+    "mechanical_filter_on",
+    "heater_on",
+    "flow_lph",
+    "q_makeup_lph",
+    "heater_power_w",
+    "turbidity_settle_h",
+)
+
 SENSOR_MEASUREMENT_KEYS = {
     "inlet_reference": (
         "alkalinity_mg_l_as_caco3",
@@ -137,8 +150,13 @@ def build_message(
         "seq": seq,
         "measurements": {key: reading[key] for key in measurement_keys if key in reading},
     }
+    actuators = {key: reading[key] for key in ACTUATOR_STATE_KEYS if key in reading}
+    if actuators:
+        message["actuators"] = actuators
     if sim_time_h is not None:
         message["sim_time_h"] = sim_time_h
+    if reading.get("tank_path"):
+        message["tank_path"] = str(reading.get("tank_path"))
     reference_measurements = _reference_measurements(reference_reading)
     if reference_measurements:
         message["reference_sensor_name"] = "inlet_reference"
@@ -187,6 +205,7 @@ def build_threshold_alert(
         "measurements": {key: snapshot[key] for key in MEASUREMENT_KEYS if key in snapshot},
         "stock": {key: snapshot[key] for key in STOCK_KEYS if key in snapshot},
         "loads": {key: snapshot[key] for key in LOAD_KEYS if key in snapshot},
+        "actuators": {key: snapshot[key] for key in ACTUATOR_STATE_KEYS if key in snapshot},
     }
 
 

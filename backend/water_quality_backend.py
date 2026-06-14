@@ -100,7 +100,7 @@ class WaterQualityBackend:
             "db_path": str(self.kafka.db_path),
             "hours": float(hours),
             "tank_id": tank_id,
-            "columns": ["timestamp"] + [alias for alias, _source in aquacast_db.DASHBOARD_COLUMN_ALIASES],
+            "columns": ["timestamp"] + [alias for alias, _source in aquacast_db.DASHBOARD_CONTEXT_ALIASES],
             "rows": rows,
         }
 

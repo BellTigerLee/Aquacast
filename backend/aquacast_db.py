@@ -38,6 +38,23 @@ DASHBOARD_COLUMN_ALIASES = (
     ("salinity", "salinity_ppt"),
     ("turbidity", "turbidity_ntu"),
 )
+ACTUATOR_STATE_COLUMNS = {
+    "inflow_enabled": "BOOLEAN",
+    "inlet_enabled": "BOOLEAN",
+    "outlet_enabled": "BOOLEAN",
+    "biofilter_on": "BOOLEAN",
+    "mechanical_filter_on": "BOOLEAN",
+    "heater_on": "BOOLEAN",
+    "flow_lph": "REAL",
+    "q_makeup_lph": "REAL",
+    "heater_power_w": "REAL",
+    "turbidity_settle_h": "REAL",
+}
+ACTUATOR_BOOL_COLUMNS = frozenset(
+    key for key, column_type in ACTUATOR_STATE_COLUMNS.items() if column_type == "BOOLEAN"
+)
+DASHBOARD_ACTUATOR_ALIASES = tuple((key, key) for key in ACTUATOR_STATE_COLUMNS)
+DASHBOARD_CONTEXT_ALIASES = DASHBOARD_COLUMN_ALIASES + DASHBOARD_ACTUATOR_ALIASES
 
 
 def _truthy(value: str | None) -> bool:
@@ -151,6 +168,9 @@ def insert_kafka_message(
     measurements = message.get("measurements") or {}
     if not isinstance(measurements, dict):
         raise ValueError("message.measurements must be an object")
+    actuators = message.get("actuators") or {}
+    if not isinstance(actuators, dict):
+        actuators = {}
 
     tank_id = str(message.get("tank_id") or "")
     event_time_ms = message.get("event_time_ms")
@@ -170,7 +190,7 @@ def insert_kafka_message(
     ).fetchone()
 
     if existing is None:
-        _insert_new_wide_row(conn, message, measurements, topic, partition, offset, sensor_name)
+        _insert_new_wide_row(conn, message, measurements, actuators, topic, partition, offset, sensor_name)
         return
 
     row_id, existing_payload_json, existing_seq = existing
@@ -181,6 +201,7 @@ def insert_kafka_message(
         "offset": offset,
         "schema_version": message.get("schema_version"),
         "source": message.get("source"),
+        "tank_path": message.get("tank_path"),
         "event_time": message.get("event_time"),
         "seq": max(_int_or_zero(existing_seq), _int_or_zero(message.get("seq"))),
         "sim_time_h": message.get("sim_time_h"),
@@ -191,6 +212,9 @@ def insert_kafka_message(
     for key in kafka_payload.MEASUREMENT_KEYS:
         if key in measurements:
             update_values[key] = measurements[key]
+    for key in ACTUATOR_STATE_COLUMNS:
+        if key in actuators:
+            update_values[key] = _actuator_column_value(key, actuators[key])
 
     assignments = ",".join(f"{key} = ?" for key in update_values)
     conn.execute(
@@ -284,10 +308,14 @@ def query_recent_wide(
         rows = conn.execute(
             f"""
             SELECT *
-            FROM {WIDE_TABLE}
-            WHERE {' AND '.join(where)}
+            FROM (
+                SELECT *
+                FROM {WIDE_TABLE}
+                WHERE {' AND '.join(where)}
+                ORDER BY event_time_ms DESC
+                LIMIT ?
+            )
             ORDER BY event_time_ms ASC
-            LIMIT ?
             """,
             params,
         ).fetchall()
@@ -324,10 +352,14 @@ def query_recent_threshold_alerts(
         rows = conn.execute(
             f"""
             SELECT *
-            FROM {THRESHOLD_ALERT_TABLE}
-            WHERE {' AND '.join(where)}
+            FROM (
+                SELECT *
+                FROM {THRESHOLD_ALERT_TABLE}
+                WHERE {' AND '.join(where)}
+                ORDER BY event_time_ms DESC
+                LIMIT ?
+            )
             ORDER BY event_time_ms ASC
-            LIMIT ?
             """,
             params,
         ).fetchall()
@@ -345,9 +377,10 @@ def dashboard_rows_from_wide(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
             "timestamp": row.get("event_time"),
             "event_time_ms": row.get("event_time_ms"),
             "tank_id": row.get("tank_id"),
+            "tank_path": row.get("tank_path"),
         }
-        for alias, source in DASHBOARD_COLUMN_ALIASES:
-            item[alias] = row.get(source)
+        for alias, source in DASHBOARD_CONTEXT_ALIASES:
+            item[alias] = _dashboard_value(alias, row.get(source))
         mapped.append(item)
     return mapped
 
@@ -395,7 +428,7 @@ def build_llm_context_payload(
         "db_path": str(Path(db_path)),
         "hours": float(hours),
         "tank_id": tank_id,
-        "columns": ["timestamp"] + [alias for alias, _source in DASHBOARD_COLUMN_ALIASES],
+        "columns": ["timestamp", "event_time_ms", "tank_id", "tank_path"] + [alias for alias, _source in DASHBOARD_CONTEXT_ALIASES],
         "row_count": len(rows),
         "latest": latest,
         "summary": summary,
@@ -453,12 +486,17 @@ def _insert_new_wide_row(
     conn: sqlite3.Connection,
     message: dict[str, Any],
     measurements: dict[str, Any],
+    actuators: dict[str, Any],
     topic: str | None,
     partition: int | None,
     offset: int | None,
     sensor_name: str,
 ) -> None:
     measurement_values = {key: measurements.get(key) for key in kafka_payload.MEASUREMENT_KEYS}
+    actuator_values = {
+        key: _actuator_column_value(key, actuators[key]) if key in actuators else None
+        for key in ACTUATOR_STATE_COLUMNS
+    }
     sensor_values = {key: 1 if key == sensor_name else 0 for key in SENSOR_COLUMNS}
     row = {
         "topic": topic,
@@ -467,12 +505,14 @@ def _insert_new_wide_row(
         "schema_version": message.get("schema_version"),
         "source": message.get("source"),
         "tank_id": message.get("tank_id"),
+        "tank_path": message.get("tank_path"),
         **sensor_values,
         "event_time": message.get("event_time"),
         "event_time_ms": message.get("event_time_ms"),
         "seq": message.get("seq"),
         "sim_time_h": message.get("sim_time_h"),
         **measurement_values,
+        **actuator_values,
         "payload_json": json.dumps([message], separators=(",", ":"), sort_keys=True),
         "created_at": _utc_now_iso(),
     }
@@ -499,6 +539,22 @@ def _append_payload_json(existing: str | None, message: dict[str, Any]) -> str:
 
 def _json_text(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def _actuator_column_value(key: str, value: Any) -> Any:
+    if value is None:
+        return None
+    if key in ACTUATOR_BOOL_COLUMNS:
+        return 1 if bool(value) else 0
+    return value
+
+
+def _dashboard_value(alias: str, value: Any) -> Any:
+    if value is None:
+        return None
+    if alias in ACTUATOR_BOOL_COLUMNS:
+        return bool(value)
+    return value
 
 
 def _int_or_zero(value: Any) -> int:
@@ -582,6 +638,7 @@ def _decode_alert_row(row: dict[str, Any]) -> dict[str, Any]:
 def _create_schema_sql() -> str:
     sensor_columns = "\n".join(f"    {key} BOOLEAN NOT NULL DEFAULT FALSE," for key in SENSOR_COLUMNS)
     measurement_columns = "\n".join(f"    {key} REAL," for key in kafka_payload.MEASUREMENT_KEYS)
+    actuator_columns = "\n".join(f"    {key} {column_type}," for key, column_type in ACTUATOR_STATE_COLUMNS.items())
     return f"""
 CREATE TABLE IF NOT EXISTS {WIDE_TABLE} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -591,12 +648,14 @@ CREATE TABLE IF NOT EXISTS {WIDE_TABLE} (
     schema_version INTEGER,
     source TEXT NOT NULL,
     tank_id TEXT NOT NULL,
+    tank_path TEXT,
 {sensor_columns}
     event_time TEXT NOT NULL,
     event_time_ms INTEGER NOT NULL,
     seq INTEGER NOT NULL,
     sim_time_h REAL,
 {measurement_columns}
+{actuator_columns}
     payload_json TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(tank_id, event_time_ms)
@@ -656,9 +715,16 @@ def _ensure_schema_columns(conn: sqlite3.Connection) -> None:
         if key not in existing:
             conn.execute(f"ALTER TABLE {WIDE_TABLE} ADD COLUMN {key} BOOLEAN NOT NULL DEFAULT FALSE")
             existing.add(key)
+    if "tank_path" not in existing:
+        conn.execute(f"ALTER TABLE {WIDE_TABLE} ADD COLUMN tank_path TEXT")
+        existing.add("tank_path")
     for key in kafka_payload.MEASUREMENT_KEYS:
         if key not in existing:
             conn.execute(f"ALTER TABLE {WIDE_TABLE} ADD COLUMN {key} REAL")
+            existing.add(key)
+    for key, column_type in ACTUATOR_STATE_COLUMNS.items():
+        if key not in existing:
+            conn.execute(f"ALTER TABLE {WIDE_TABLE} ADD COLUMN {key} {column_type}")
             existing.add(key)
 
 def main() -> None:

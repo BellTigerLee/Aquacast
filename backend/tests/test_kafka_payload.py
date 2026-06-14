@@ -24,6 +24,12 @@ _READING = {
     "nh3_mg_l": 0.012,
     "nitrite_mg_l": 0.0,
     "nitrate_mg_l": 0.0,
+    "inflow_enabled": False,
+    "biofilter_on": True,
+    "mechanical_filter_on": False,
+    "flow_lph": 1200.0,
+    "turbidity_settle_h": 0.0,
+    "tank_path": "/World/Fishtank_2/Water",
 }
 
 def test_build_message_keeps_only_sensor_measurement_keys_and_drops_do_mg_l():
@@ -38,6 +44,11 @@ def test_build_message_keeps_only_sensor_measurement_keys_and_drops_do_mg_l():
     assert message["seq"] == 421
     assert message["sim_time_h"] == 3.27
     assert message["source"] == "aquacast-backend"
+    assert message["tank_path"] == "/World/Fishtank_2/Water"
+    assert message["actuators"]["inflow_enabled"] is False
+    assert message["actuators"]["biofilter_on"] is True
+    assert message["actuators"]["mechanical_filter_on"] is False
+    assert message["actuators"]["flow_lph"] == 1200.0
 
 def test_build_message_filters_each_known_sensor_to_its_responsible_measurements():
     expected_keys = {
