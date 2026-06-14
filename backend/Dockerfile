@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY backend /app/backend
 COPY extensions/aquacast.aquacast_composer_extensions/water_quality_dynamics.py /app/extensions/aquacast.aquacast_composer_extensions/
+COPY extensions/aquacast.aquacast_composer_extensions/water_quality_bands.py /app/extensions/aquacast.aquacast_composer_extensions/
 COPY extensions/aquacast.aquacast_composer_extensions/water_quality_model.py /app/extensions/aquacast.aquacast_composer_extensions/
 COPY extensions/aquacast.aquacast_composer_extensions/thermal_dynamics.py /app/extensions/aquacast.aquacast_composer_extensions/
 COPY extensions/aquacast.aquacast_composer_extensions/data/wq_constants.json /app/extensions/aquacast.aquacast_composer_extensions/data/
