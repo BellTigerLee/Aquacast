@@ -302,7 +302,11 @@ LOCAL_LLM_WQ_CONTEXT_HOURS = 4.0
 LOCAL_LLM_WQ_CONTEXT_LIMIT = 7200
 LOCAL_LLM_WQ_CONTEXT_ALERT_LIMIT = 200
 LOCAL_LLM_WQ_CONTEXT_MAX_CHARS = 5000
+LOCAL_LLM_PANEL_DISPLAY_LOG_LIMIT = 100
 LOCAL_LLM_RESPONSE_LOG_LIMIT = 0  # 0 keeps the panel response log unbounded for the session.
+AI_PROPOSAL_BACKEND_URL = "http://127.0.0.1:8000"
+AI_PROPOSAL_TIMEOUT_SECONDS = 60.0
+AI_PROPOSAL_INBOX_LIMIT = 20
 
 # Practical operating thresholds for salmon/RAS-style water-quality views.
 # Units match snapshot/sensor keys: degC, mg/L, pH, mg/L as CaCO3, ppt, NTU.
