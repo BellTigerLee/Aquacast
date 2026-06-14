@@ -18,6 +18,35 @@ from .local_rag import build_rag_context
 
 
 class LocalLLMPanel:
+    _LOCAL_CONFIRM_SYNC_ACTIONS = {
+        "set_temperature",
+        "set_heater",
+        "set_inlet_temperature",
+        "set_inlet_temp",
+        "set_water_exchange",
+        "set_flow_rate",
+        "set_inflow",
+        "set_biofilter",
+        "toggle_biofilter",
+        "set_mechanical_filter",
+        "set_solids_removal",
+        "set_stock",
+        "set_inlet_salinity",
+        "set_salinity_in",
+        "set_inlet_turbidity",
+        "set_turbidity_in",
+        "set_inlet_do",
+        "set_inlet_alkalinity",
+        "set_inlet_tan",
+        "set_aeration",
+        "set_kla_o2",
+        "set_co2_stripping",
+        "set_kla_co2",
+        "set_biofilter_capacity",
+        "set_nitrification_rate",
+        "load_scenario",
+    }
+
     def __init__(self, *, aquacast_main=None, config_getter=None):
         self._aquacast_main = aquacast_main
         self._config_getter = config_getter or (lambda _name, default=None: default)
@@ -147,6 +176,8 @@ class LocalLLMPanel:
         title = f"{risk.upper()} | {status} | {proposal_id[:8]}"
         with ui.VStack(spacing=4):
             ui.Label(title, height=20)
+            ui.Label(self._proposal_target_text(proposal), word_wrap=True, height=24)
+            ui.Label(self._proposal_evidence_text(proposal), word_wrap=True, height=44)
             ui.Label(summary, word_wrap=True, height=46)
             ui.Label(self._proposal_actions_text(actions), word_wrap=True, height=74)
             if proposal_id and status == "pending":
@@ -244,6 +275,8 @@ class LocalLLMPanel:
         self._proposal_status = "Generating proposal from dashboard backend..."
         self._request_ui_rebuild()
         try:
+            diagnostic = await asyncio.to_thread(self._proposal_context_diagnostic)
+            self._append_message("Proposal", diagnostic)
             proposal = await asyncio.to_thread(self._proposal_client().propose)
             self._proposals = [proposal]
             proposal_id = str(proposal.get("proposal_id") or "")
@@ -322,6 +355,19 @@ class LocalLLMPanel:
             keep_alive=str(self._config("LOCAL_LLM_KEEP_ALIVE", "1h")),
             num_ctx=int(self._config("LOCAL_LLM_NUM_CTX", 4096) or 4096),
         )
+        prompt = self._prompt_with_rag(prompt)
+        return client.chat(
+            prompt,
+            system_prompt=self._config(
+                "LOCAL_LLM_SYSTEM_PROMPT",
+                self._config(
+                    "LM_STUDIO_SYSTEM_PROMPT",
+                    "You are a concise Aquacast aquaculture assistant. Use provided RAG context when relevant.",
+                ),
+            ),
+            temperature=float(self._config("LOCAL_LLM_TEMPERATURE", self._config("LM_STUDIO_TEMPERATURE", 0.7))),
+            max_tokens=int(self._config("LOCAL_LLM_MAX_TOKENS", self._config("LM_STUDIO_MAX_TOKENS", 256))),
+        )
 
     def _proposal_client(self) -> AIProposalClient:
         return AIProposalClient(
@@ -332,18 +378,85 @@ class LocalLLMPanel:
     def _sync_local_confirmed_actions(self, confirm_result: dict):
         if self._aquacast_main is None:
             return
+        if not hasattr(self._aquacast_main, "execute_water_quality_action"):
+            self._append_message("Proposal", "Local Omniverse action API unavailable; confirm result was not locally synchronized.")
+            return
+        synced = 0
+        skipped = []
         for execution in confirm_result.get("executions") or []:
             if str(execution.get("status") or "").lower() != "applied":
                 continue
-            payload = execution.get("normalized_payload") or execution.get("request") or {}
-            if str(payload.get("type") or payload.get("action_type") or "").strip().lower() != "set_inflow":
+            payload = self._local_action_payload_from_execution(execution)
+            if not payload:
+                skipped.append(str(execution.get("action_type") or execution.get("id") or "unknown"))
                 continue
-            if "enabled" not in payload:
+            try:
+                result = self._aquacast_main.execute_water_quality_action(payload)
+            except Exception as exc:
+                skipped.append(f"{payload.get('type', 'unknown')} error={exc}")
                 continue
-            desired = self._bool_value(payload.get("enabled"))
-            if desired is None:
+            if isinstance(result, dict) and result.get("status") == "ok":
+                synced += 1
+                self._append_message("Proposal", f"Synchronized local Omniverse action -> {json.dumps(payload, ensure_ascii=False)}")
                 continue
-            self._sync_local_inflow(desired)
+            error = result.get("error", result.get("status", "unknown")) if isinstance(result, dict) else "unknown"
+            skipped.append(f"{payload.get('type', 'unknown')} error={error}")
+        if skipped:
+            self._append_message("Proposal", f"Skipped local sync for {len(skipped)} execution(s): {', '.join(skipped[:5])}")
+        if synced == 0 and not skipped:
+            self._append_message("Proposal", "Confirm result contained no locally syncable applied actions.")
+
+    def _local_action_payload_from_execution(self, execution: dict) -> dict | None:
+        source = execution.get("normalized_payload") or execution.get("request") or execution.get("payload") or {}
+        if not isinstance(source, dict):
+            return None
+        kind = str(source.get("type") or source.get("action") or source.get("action_type") or execution.get("action_type") or "").strip().lower()
+        if kind not in self._LOCAL_CONFIRM_SYNC_ACTIONS:
+            return None
+
+        params = source.get("params") or source.get("payload") or source.get("arguments") or {}
+        payload = {"type": kind}
+        if isinstance(params, dict):
+            payload.update(params)
+        for key, value in source.items():
+            if key in {"type", "action", "action_type", "params", "payload", "arguments", "status", "operator", "note"}:
+                continue
+            payload.setdefault(key, value)
+
+        tank_path = self._tank_path_from_action(source, execution)
+        if tank_path:
+            payload["tank_path"] = tank_path
+        return payload
+
+    def _tank_path_from_action(self, source: dict, execution: dict) -> str:
+        for item in (source, execution):
+            tank_path = str(item.get("tank_path") or "").strip()
+            if tank_path:
+                return tank_path
+        tank_id = str(source.get("tank_id") or execution.get("tank_id") or "").strip()
+        if not tank_id or self._aquacast_main is None or not hasattr(self._aquacast_main, "list_fish_tanks"):
+            return ""
+        try:
+            for tank_path in self._aquacast_main.list_fish_tanks():
+                if self._tank_id_from_path(str(tank_path)) == tank_id:
+                    return str(tank_path)
+        except Exception:
+            return ""
+        return ""
+
+    @staticmethod
+    def _tank_id_from_path(tank_path: str) -> str:
+        parts = [part for part in str(tank_path).strip("/").split("/") if part]
+        if parts and parts[-1] == "Water":
+            parts = parts[:-1]
+        generic = {"Root", "scene", "Meshes", "Model", "Components", "Component", "Water"}
+        for part in reversed(parts):
+            if part in generic:
+                continue
+            if part.startswith("Group") and part[5:].isdigit():
+                continue
+            return part
+        return ""
 
     def _sync_local_inflow(self, enabled: bool):
         if self._aquacast_main is None or not hasattr(self._aquacast_main, "set_inflow"):
@@ -364,19 +477,35 @@ class LocalLLMPanel:
         if text in {"0", "false", "no", "off", "disable", "disabled"}:
             return False
         return None
-        prompt = self._prompt_with_rag(prompt)
-        return client.chat(
-            prompt,
-            system_prompt=self._config(
-                "LOCAL_LLM_SYSTEM_PROMPT",
-                self._config(
-                    "LM_STUDIO_SYSTEM_PROMPT",
-                    "You are a concise Aquacast aquaculture assistant. Use provided RAG context when relevant.",
-                ),
-            ),
-            temperature=float(self._config("LOCAL_LLM_TEMPERATURE", self._config("LM_STUDIO_TEMPERATURE", 0.7))),
-            max_tokens=int(self._config("LOCAL_LLM_MAX_TOKENS", self._config("LM_STUDIO_MAX_TOKENS", 256))),
+
+    def _proposal_context_diagnostic(self) -> str:
+        backend_url = str(self._config("WQ_BACKEND_URL", "http://127.0.0.1:8765")).rstrip("/")
+        proposal_url = self._model_string(self._proposal_backend_url_model, "http://127.0.0.1:8000")
+        params = urlencode(
+            {
+                "hours": float(self._config("LOCAL_LLM_WQ_CONTEXT_HOURS", 4.0) or 4.0),
+                "limit": min(200, int(self._config("LOCAL_LLM_WQ_CONTEXT_LIMIT", 7200) or 7200)),
+                "alert_limit": min(50, int(self._config("LOCAL_LLM_WQ_CONTEXT_ALERT_LIMIT", 200) or 200)),
+            }
         )
+        url = f"{backend_url}/llm-context?{params}"
+        try:
+            request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+            with urllib.request.urlopen(request, timeout=5.0) as response:
+                payload = json.loads(response.read().decode("utf-8") or "{}")
+            latest = payload.get("latest") or {}
+            return (
+                "Proposal context check: "
+                f"WQ DB rows={payload.get('row_count', 0)}, "
+                f"latest={latest.get('timestamp', latest.get('event_time_ms', 'none'))}, "
+                f"alerts={payload.get('threshold_alert_count', 0)}. "
+                f"Generate Proposal is delegated to {proposal_url}; SQL usage inside that backend is not verifiable from Omniverse."
+            )
+        except Exception as exc:
+            return (
+                "Proposal context check failed: "
+                f"could not read {url}: {exc}. Generate Proposal is still delegated to {proposal_url}."
+            )
 
     def _prompt_with_rag(self, prompt: str) -> str:
         context_parts = []
@@ -485,11 +614,63 @@ class LocalLLMPanel:
         for index, action in enumerate(actions[:5], start=1):
             action_type = action.get("action_type") or action.get("type") or "unknown"
             params = action.get("params") or action.get("payload") or {}
+            target = LocalLLMPanel._action_target_text(action)
             rationale = action.get("rationale") or ""
-            lines.append(f"{index}. {action_type} {params} {rationale}")
+            lines.append(f"{index}. {action_type} {target} {params} {rationale}".strip())
         if len(actions) > 5:
             lines.append(f"... {len(actions) - 5} more")
         return "\n".join(lines)
+
+    @staticmethod
+    def _proposal_target_text(proposal: dict) -> str:
+        latest = proposal.get("latest_sensor") if isinstance(proposal.get("latest_sensor"), dict) else {}
+        tank_id = str(proposal.get("target_tank_id") or latest.get("tank_id") or "").strip()
+        tank_path = str(proposal.get("target_tank_path") or latest.get("tank_path") or "").strip()
+        if not tank_id and tank_path:
+            tank_id = LocalLLMPanel._tank_id_from_path(tank_path)
+        if tank_id or tank_path:
+            return f"Target tank: {tank_id or '(unknown)'} | {tank_path or '(no path)'}"
+        return "Target tank: not specified"
+
+    @staticmethod
+    def _proposal_evidence_text(proposal: dict) -> str:
+        evidence = proposal.get("context_evidence") if isinstance(proposal.get("context_evidence"), dict) else {}
+        latest = evidence.get("latest_sensor") if isinstance(evidence.get("latest_sensor"), dict) else {}
+        thresholds = evidence.get("threshold_reference") if isinstance(evidence.get("threshold_reference"), dict) else {}
+        rag = proposal.get("rag_status") if isinstance(proposal.get("rag_status"), dict) else {}
+        temp = latest.get("temperature_c", latest.get("temperature"))
+        ph = latest.get("pH", latest.get("ph"))
+        temp_threshold = thresholds.get("temperature_c") if isinstance(thresholds.get("temperature_c"), dict) else {}
+        rag_mode = str(rag.get("mode") or "unknown")
+        rag_note = "fallback" if rag.get("fallback") else "active"
+        parts = []
+        if temp is not None:
+            parts.append(f"T={LocalLLMPanel._short_value(temp)}C")
+        if ph is not None:
+            parts.append(f"pH={LocalLLMPanel._short_value(ph)}")
+        if temp_threshold:
+            parts.append(f"temp bands={temp_threshold}")
+        parts.append(f"RAG={rag_mode}/{rag_note}")
+        return "Evidence: " + " | ".join(str(part) for part in parts)
+
+    @staticmethod
+    def _short_value(value) -> str:
+        try:
+            return f"{float(value):.2f}"
+        except Exception:
+            return str(value)
+
+    @staticmethod
+    def _action_target_text(action: dict) -> str:
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        params = action.get("params") if isinstance(action.get("params"), dict) else {}
+        tank_id = str(action.get("tank_id") or payload.get("tank_id") or params.get("tank_id") or "").strip()
+        tank_path = str(action.get("tank_path") or payload.get("tank_path") or params.get("tank_path") or "").strip()
+        if not tank_id and tank_path:
+            tank_id = LocalLLMPanel._tank_id_from_path(tank_path)
+        if tank_id or tank_path:
+            return f"target={tank_id or tank_path}"
+        return "target=unspecified"
 
     def _config(self, name: str, default=None):
         return self._config_getter(name, default)

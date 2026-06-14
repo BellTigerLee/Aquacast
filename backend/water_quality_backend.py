@@ -278,8 +278,22 @@ class WaterQualityBackend:
             "heater_on",
             "flow_lph",
             "q_makeup_lph",
+            "inlet_temp_c",
+            "do_in",
+            "tan_in_mg_l",
+            "co2_eq",
+            "alk_in",
+            "salinity_in_ppt",
+            "turbidity_in_ntu",
+            "kla_o2_h",
+            "kla_co2_h",
+            "k_nitrif_h",
+            "vtr_max_mg_l_h",
+            "fish_count",
+            "fish_weight_kg",
             "heater_power_w",
             "turbidity_settle_h",
+            "scenario",
         ):
             if key in snap:
                 payload[key] = snap[key]

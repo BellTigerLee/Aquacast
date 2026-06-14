@@ -1306,7 +1306,7 @@ class CreateSetupExtension(omni.ext.IExt):
     def _selected_control_tank(self):
         if not self._control_tanks:
             return None
-        index = self._clamp_index(self._fish_combo_index(self._control_tank_combo), self._control_tanks)
+        index = self._clamp_index(self._sensor_combo_index(self._control_tank_combo, self._control_tank_index), self._control_tanks)
         self._control_tank_index = index
         return self._control_tanks[index]
 

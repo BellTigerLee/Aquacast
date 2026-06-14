@@ -47,8 +47,22 @@ ACTUATOR_STATE_COLUMNS = {
     "heater_on": "BOOLEAN",
     "flow_lph": "REAL",
     "q_makeup_lph": "REAL",
+    "inlet_temp_c": "REAL",
+    "do_in": "REAL",
+    "tan_in_mg_l": "REAL",
+    "co2_eq": "REAL",
+    "alk_in": "REAL",
+    "salinity_in_ppt": "REAL",
+    "turbidity_in_ntu": "REAL",
+    "kla_o2_h": "REAL",
+    "kla_co2_h": "REAL",
+    "k_nitrif_h": "REAL",
+    "vtr_max_mg_l_h": "REAL",
+    "fish_count": "REAL",
+    "fish_weight_kg": "REAL",
     "heater_power_w": "REAL",
     "turbidity_settle_h": "REAL",
+    "scenario": "TEXT",
 }
 ACTUATOR_BOOL_COLUMNS = frozenset(
     key for key, column_type in ACTUATOR_STATE_COLUMNS.items() if column_type == "BOOLEAN"
