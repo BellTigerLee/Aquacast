@@ -28,18 +28,14 @@ if str(EXT_ROOT) not in sys.path:
     sys.path.insert(0, str(EXT_ROOT))
 
 from water_quality_model import DEFAULT_SENSOR_NAMES, load_model  # noqa: E402
+import water_quality_bands  # noqa: E402
 from kafka_publisher import KafkaPublisher  # noqa: E402
 import aquacast_db  # noqa: E402
 
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-DEFAULT_THRESHOLDS = {
-    "dissolved_oxygen_mg_l": {"value": 8.0, "mode": "min"},
-    "tan_mg_l": {"value": 2.0, "mode": "max"},
-    "ph": {"value": 8.5, "mode": "max"},
-    "co2_mg_l": {"value": 15.0, "mode": "max"},
-}
+DEFAULT_THRESHOLDS = water_quality_bands.DEFAULT_WQ_METRIC_BANDS
 
 
 class WaterQualityBackend:
@@ -284,26 +280,7 @@ class WaterQualityBackend:
         return self._normalize_thresholds(DEFAULT_THRESHOLDS)
 
     def _normalize_thresholds(self, thresholds: dict[str, Any] | None) -> dict[str, Any]:
-        raw = thresholds.get("thresholds") if isinstance(thresholds, dict) and "thresholds" in thresholds else thresholds
-        raw = raw if isinstance(raw, dict) else {}
-        normalized = {}
-        for key, default in DEFAULT_THRESHOLDS.items():
-            item = raw.get(key, default)
-            if isinstance(item, dict):
-                value = item.get("value", default["value"])
-                mode = item.get("mode", default["mode"])
-            else:
-                value = item
-                mode = default["mode"]
-            try:
-                value = float(value)
-            except (TypeError, ValueError):
-                value = float(default["value"])
-            mode = str(mode or default["mode"]).strip().lower()
-            if mode not in {"min", "max"}:
-                mode = default["mode"]
-            normalized[key] = {"value": value, "mode": mode}
-        return normalized
+        return water_quality_bands.normalize_bands(thresholds or DEFAULT_THRESHOLDS)
 
 
 class RequestHandler(BaseHTTPRequestHandler):

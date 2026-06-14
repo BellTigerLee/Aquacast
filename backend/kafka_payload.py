@@ -4,6 +4,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+from pathlib import Path
+import sys
+
+
+EXT_ROOT = Path(__file__).resolve().parents[1] / "extensions" / "aquacast.aquacast_composer_extensions"
+if str(EXT_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXT_ROOT))
+
+import water_quality_bands  # noqa: E402
 
 
 # `do_mg_l` is a duplicate of `dissolved_oxygen_mg_l` in the model reading.
@@ -23,10 +32,17 @@ MEASUREMENT_KEYS = (
 )
 
 THRESHOLD_PARAMETER_METADATA = {
+    "temperature_c": {"label": "Water Temperature", "unit": "C", "mode": "max"},
     "dissolved_oxygen_mg_l": {"label": "Dissolved Oxygen", "unit": "mg/L", "mode": "min"},
     "tan_mg_l": {"label": "TAN", "unit": "mg/L", "mode": "max"},
+    "nh3_mg_l": {"label": "Unionized Ammonia", "unit": "mg/L", "mode": "max"},
     "ph": {"label": "pH", "unit": "", "mode": "max"},
     "co2_mg_l": {"label": "CO2", "unit": "mg/L", "mode": "max"},
+    "alkalinity_mg_l_as_caco3": {"label": "Alkalinity", "unit": "mg/L CaCO3", "mode": "min"},
+    "salinity_ppt": {"label": "Salinity", "unit": "ppt", "mode": "max"},
+    "turbidity_ntu": {"label": "Turbidity", "unit": "NTU", "mode": "max"},
+    "nitrite_mg_l": {"label": "Nitrite", "unit": "mg/L", "mode": "max"},
+    "nitrate_mg_l": {"label": "Nitrate", "unit": "mg/L", "mode": "max"},
 }
 
 STOCK_KEYS = (
@@ -150,13 +166,14 @@ def build_threshold_alert(
     tank_name = str(tank_name or snapshot.get("tank_name") or snapshot.get("tank_id") or tank_id)
     tank_path = str(tank_path or snapshot.get("tank_path") or "")
     event_time = iso_from_ms(event_time_ms)
+    severity = "critical" if any(item.get("band_state") == "critical" for item in violations) else "warning"
     return {
         "schema_version": schema_version,
         "message_type": "threshold_alert",
         "source": source,
         "alert_id": f"{tank_id}:threshold:{event_time_ms}",
         "event_type": "threshold_violation",
-        "severity": "warning",
+        "severity": severity,
         "tank_id": tank_id,
         "tank_name": tank_name,
         "tank_path": tank_path,
@@ -175,58 +192,32 @@ def build_threshold_alert(
 
 def threshold_violations(snapshot: dict, thresholds: dict) -> list[dict]:
     violations = []
-    for parameter, threshold in _normalized_thresholds(thresholds).items():
-        if parameter not in snapshot:
-            continue
-        try:
-            value = float(snapshot[parameter])
-            threshold_value = float(threshold["value"])
-        except (TypeError, ValueError, KeyError):
-            continue
-        mode = threshold.get("mode") or THRESHOLD_PARAMETER_METADATA.get(parameter, {}).get("mode", "max")
-        violated = value < threshold_value if mode == "min" else value > threshold_value
-        if not violated:
+    normalized = _normalized_thresholds(thresholds)
+    states = water_quality_bands.snapshot_states(snapshot, normalized)
+    for parameter, result in states.items():
+        state = str(result.get("state") or water_quality_bands.STATE_UNKNOWN)
+        if state not in {water_quality_bands.STATE_WARN, water_quality_bands.STATE_CRITICAL}:
             continue
         metadata = THRESHOLD_PARAMETER_METADATA.get(parameter, {})
-        condition = "value < threshold" if mode == "min" else "value > threshold"
+        condition = dict(result.get("condition") or {})
+        value = result.get("value")
         violations.append(
             {
                 "parameter": parameter,
                 "label": metadata.get("label", parameter),
                 "unit": metadata.get("unit", ""),
                 "value": value,
-                "threshold": threshold_value,
-                "mode": mode,
-                "condition": condition,
-                "delta": value - threshold_value,
+                "threshold": condition,
+                "mode": "band",
+                "band_state": state,
+                "condition": water_quality_bands.condition_label(condition),
             }
         )
     return violations
 
 
 def _normalized_thresholds(thresholds: dict | None) -> dict:
-    raw = thresholds.get("thresholds") if isinstance(thresholds, dict) and "thresholds" in thresholds else thresholds
-    raw = raw if isinstance(raw, dict) else {}
-    normalized = {}
-    for parameter, metadata in THRESHOLD_PARAMETER_METADATA.items():
-        item = raw.get(parameter)
-        if item is None:
-            continue
-        if isinstance(item, dict):
-            value = item.get("value")
-            mode = item.get("mode", metadata.get("mode", "max"))
-        else:
-            value = item
-            mode = metadata.get("mode", "max")
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            continue
-        mode = str(mode or metadata.get("mode", "max")).strip().lower()
-        if mode not in {"min", "max"}:
-            mode = metadata.get("mode", "max")
-        normalized[parameter] = {"value": value, "mode": mode}
-    return normalized
+    return water_quality_bands.normalize_bands(thresholds)
 
 
 def _reference_measurements(reference_reading: dict | None) -> dict:
