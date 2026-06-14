@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
+import time
 from typing import Any
 
 import kafka_payload
@@ -25,6 +26,18 @@ DEFAULT_LOCAL_DB_PATH = BACKEND_ROOT / "aquacast.db"
 WIDE_TABLE = "aquacast_wide"
 THRESHOLD_ALERT_TABLE = "aquacast_threshold_alerts"
 SENSOR_COLUMNS = tuple(kafka_payload.SENSOR_MEASUREMENT_KEYS.keys())
+DASHBOARD_COLUMN_ALIASES = (
+    ("temperature", "temperature_c"),
+    ("DO", "dissolved_oxygen_mg_l"),
+    ("CO2", "co2_mg_l"),
+    ("pH", "ph"),
+    ("TAN", "tan_mg_l"),
+    ("ammonia", "nh3_mg_l"),
+    ("nitrite", "nitrite_mg_l"),
+    ("nitrate", "nitrate_mg_l"),
+    ("salinity", "salinity_ppt"),
+    ("turbidity", "turbidity_ntu"),
+)
 
 
 def _truthy(value: str | None) -> bool:
@@ -243,6 +256,199 @@ def insert_threshold_alert(
     )
 
 
+def query_recent_wide(
+    db_path: Path | str,
+    *,
+    hours: float = 4.0,
+    limit: int = 7200,
+    tank_id: str | None = None,
+    now_ms: int | None = None,
+) -> list[dict[str, Any]]:
+    """Return recent wide water-quality rows from SQLite."""
+
+    cutoff_ms = _cutoff_ms(hours, now_ms=now_ms)
+    limit = _safe_limit(limit, default=7200, maximum=100000)
+    path = Path(db_path)
+    if not path.exists():
+        return []
+
+    where = ["event_time_ms >= ?"]
+    params: list[Any] = [cutoff_ms]
+    if tank_id:
+        where.append("tank_id = ?")
+        params.append(str(tank_id))
+    params.append(limit)
+
+    conn = _read_connection(path)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM {WIDE_TABLE}
+            WHERE {' AND '.join(where)}
+            ORDER BY event_time_ms ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
+def query_recent_threshold_alerts(
+    db_path: Path | str,
+    *,
+    hours: float = 4.0,
+    limit: int = 200,
+    tank_id: str | None = None,
+    now_ms: int | None = None,
+) -> list[dict[str, Any]]:
+    """Return recent decoded threshold alert rows from SQLite."""
+
+    cutoff_ms = _cutoff_ms(hours, now_ms=now_ms)
+    limit = _safe_limit(limit, default=200, maximum=10000)
+    path = Path(db_path)
+    if not path.exists():
+        return []
+
+    where = ["event_time_ms >= ?"]
+    params: list[Any] = [cutoff_ms]
+    if tank_id:
+        where.append("tank_id = ?")
+        params.append(str(tank_id))
+    params.append(limit)
+
+    conn = _read_connection(path)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM {THRESHOLD_ALERT_TABLE}
+            WHERE {' AND '.join(where)}
+            ORDER BY event_time_ms ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    return [_decode_alert_row(dict(row)) for row in rows]
+
+
+def dashboard_rows_from_wide(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map Aquacast canonical metric names to dashboard/LLM-friendly names."""
+
+    mapped = []
+    for row in rows:
+        item: dict[str, Any] = {
+            "timestamp": row.get("event_time"),
+            "event_time_ms": row.get("event_time_ms"),
+            "tank_id": row.get("tank_id"),
+        }
+        for alias, source in DASHBOARD_COLUMN_ALIASES:
+            item[alias] = row.get(source)
+        mapped.append(item)
+    return mapped
+
+
+def summarize_dashboard_rows(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    for alias, _source in DASHBOARD_COLUMN_ALIASES:
+        values = [_float_or_none(row.get(alias)) for row in rows]
+        values = [value for value in values if value is not None]
+        if not values:
+            continue
+        first = values[0]
+        latest = values[-1]
+        summary[alias] = {
+            "count": len(values),
+            "min": min(values),
+            "max": max(values),
+            "avg": sum(values) / len(values),
+            "first": first,
+            "latest": latest,
+            "delta": latest - first,
+        }
+    return summary
+
+
+def build_llm_context_payload(
+    db_path: Path | str,
+    *,
+    hours: float = 4.0,
+    limit: int = 7200,
+    alert_limit: int = 200,
+    tank_id: str | None = None,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    """Build a compact recent SQLite context payload for LLM prompts."""
+
+    wide_rows = query_recent_wide(db_path, hours=hours, limit=limit, tank_id=tank_id, now_ms=now_ms)
+    rows = dashboard_rows_from_wide(wide_rows)
+    alerts = query_recent_threshold_alerts(db_path, hours=hours, limit=alert_limit, tank_id=tank_id, now_ms=now_ms)
+    summary = summarize_dashboard_rows(rows)
+    latest = rows[-1] if rows else None
+    sample = rows[-min(120, len(rows)) :]
+    payload = {
+        "status": "ok",
+        "db_path": str(Path(db_path)),
+        "hours": float(hours),
+        "tank_id": tank_id,
+        "columns": ["timestamp"] + [alias for alias, _source in DASHBOARD_COLUMN_ALIASES],
+        "row_count": len(rows),
+        "latest": latest,
+        "summary": summary,
+        "recent_sample": sample,
+        "threshold_alert_count": len(alerts),
+        "threshold_alerts": alerts[-min(alert_limit, len(alerts)) :],
+    }
+    payload["context_text"] = render_llm_context_text(payload)
+    return payload
+
+
+def render_llm_context_text(payload: dict[str, Any]) -> str:
+    lines = [
+        "[Aquacast SQLite water-quality context]",
+        f"Window: last {payload.get('hours')} hours",
+        f"Rows: {payload.get('row_count', 0)}",
+    ]
+    latest = payload.get("latest")
+    if latest:
+        lines.append(f"Latest snapshot: {_json_text(latest)}")
+
+    summary = payload.get("summary") or {}
+    if summary:
+        lines.append("Metric trends:")
+        for alias, values in summary.items():
+            lines.append(
+                "- "
+                f"{alias}: latest={_round_float(values.get('latest'))}, "
+                f"avg={_round_float(values.get('avg'))}, "
+                f"min={_round_float(values.get('min'))}, "
+                f"max={_round_float(values.get('max'))}, "
+                f"delta={_round_float(values.get('delta'))}"
+            )
+
+    alerts = payload.get("threshold_alerts") or []
+    if alerts:
+        lines.append("Recent threshold/anomaly alerts:")
+        for alert in alerts[-20:]:
+            names = alert.get("violated_parameter_names") or []
+            lines.append(
+                "- "
+                f"{alert.get('event_time')} tank={alert.get('tank_id')} "
+                f"severity={alert.get('severity')} violated={names}"
+            )
+    else:
+        lines.append("Recent threshold/anomaly alerts: none recorded in this window")
+
+    sample = payload.get("recent_sample") or []
+    if sample:
+        lines.append(f"Recent sample rows: {_json_text(sample[-20:])}")
+    return "\n".join(lines)
+
+
 def _insert_new_wide_row(
     conn: sqlite3.Connection,
     message: dict[str, Any],
@@ -302,9 +508,75 @@ def _int_or_zero(value: Any) -> int:
         return 0
 
 
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _round_float(value: Any) -> Any:
+    numeric = _float_or_none(value)
+    if numeric is None:
+        return value
+    return round(numeric, 5)
+
+
 def _utc_now_iso() -> str:
     dt = datetime.now(timezone.utc)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _cutoff_ms(hours: float, *, now_ms: int | None = None) -> int:
+    try:
+        hours_value = max(0.0, float(hours))
+    except (TypeError, ValueError):
+        hours_value = 4.0
+    current_ms = int(now_ms if now_ms is not None else _now_ms())
+    return current_ms - int(hours_value * 3600.0 * 1000.0)
+
+
+def _safe_limit(value: Any, *, default: int, maximum: int) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = default
+    return max(1, min(limit, maximum))
+
+
+def _read_connection(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA query_only=ON")
+    except Exception:
+        pass
+    return conn
+
+
+def _decode_json(value: Any, default: Any) -> Any:
+    if value in (None, ""):
+        return default
+    try:
+        return json.loads(str(value))
+    except (TypeError, json.JSONDecodeError):
+        return default
+
+
+def _decode_alert_row(row: dict[str, Any]) -> dict[str, Any]:
+    decoded = dict(row)
+    decoded["violated_parameter_names"] = _decode_json(row.get("violated_parameter_names_json"), [])
+    decoded["violations"] = _decode_json(row.get("violations_json"), [])
+    decoded["thresholds"] = _decode_json(row.get("thresholds_json"), {})
+    decoded["measurements"] = _decode_json(row.get("measurements_json"), {})
+    decoded["stock"] = _decode_json(row.get("stock_json"), {})
+    decoded["loads"] = _decode_json(row.get("loads_json"), {})
+    decoded["payload"] = _decode_json(row.get("payload_json"), {})
+    return decoded
 
 
 def _create_schema_sql() -> str:

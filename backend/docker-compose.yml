@@ -47,14 +47,14 @@ services:
       DYNAMIC_CONFIG_ENABLED: "true"
 
   # SQLite CLI sidecar. It creates a persistent local DB file that the backend
-  # can access through the shared sqlite-data volume at /data/aquacast.db.
+  # and companion dashboard can share at backend/data/sqlite/aquacast.db.
   sqlite:
     image: alpine/sqlite:3.51.2
     container_name: aquacast-sqlite
     entrypoint: /bin/sh
     command: -c "sqlite3 /data/aquacast.db 'PRAGMA journal_mode=WAL;' >/dev/null && tail -f /dev/null"
     volumes:
-      - sqlite-data:/data
+      - ./data/sqlite:/data
     healthcheck:
       test: ["CMD-SHELL", "sqlite3 /data/aquacast.db 'SELECT 1;' >/dev/null 2>&1 || exit 1"]
       interval: 10s
@@ -76,7 +76,7 @@ services:
       - "13001:3001"
     volumes:
       - sqlitebrowser-config:/config
-      - sqlite-data:/data
+      - ./data/sqlite:/data
     restart: unless-stopped
 
   water-quality-backend:
@@ -93,7 +93,7 @@ services:
     ports:
       - "8765:8765"
     volumes:
-      - sqlite-data:/data
+      - ./data/sqlite:/data
     env_file:
       - aquacast-backend.env
     environment:
@@ -106,5 +106,4 @@ services:
       AQUACAST_THRESHOLD_ALERT_REPEAT_SECONDS: "60"
 
 volumes:
-  sqlite-data:
   sqlitebrowser-config:

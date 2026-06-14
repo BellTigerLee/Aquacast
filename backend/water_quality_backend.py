@@ -86,6 +86,47 @@ class WaterQualityBackend:
         with self._lock:
             return {"status": "ok", "thresholds": self._read_thresholds()}
 
+    def history(self, *, hours: float = 4.0, limit: int = 7200, tank_id: str | None = None) -> dict[str, Any]:
+        rows = aquacast_db.dashboard_rows_from_wide(
+            aquacast_db.query_recent_wide(
+                self.kafka.db_path,
+                hours=hours,
+                limit=limit,
+                tank_id=tank_id,
+            )
+        )
+        return {
+            "status": "ok",
+            "db_path": str(self.kafka.db_path),
+            "hours": float(hours),
+            "tank_id": tank_id,
+            "columns": ["timestamp"] + [alias for alias, _source in aquacast_db.DASHBOARD_COLUMN_ALIASES],
+            "rows": rows,
+        }
+
+    def threshold_alerts(self, *, hours: float = 4.0, limit: int = 200, tank_id: str | None = None) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "db_path": str(self.kafka.db_path),
+            "hours": float(hours),
+            "tank_id": tank_id,
+            "rows": aquacast_db.query_recent_threshold_alerts(
+                self.kafka.db_path,
+                hours=hours,
+                limit=limit,
+                tank_id=tank_id,
+            ),
+        }
+
+    def llm_context(self, *, hours: float = 4.0, limit: int = 7200, alert_limit: int = 200, tank_id: str | None = None) -> dict[str, Any]:
+        return aquacast_db.build_llm_context_payload(
+            self.kafka.db_path,
+            hours=hours,
+            limit=limit,
+            alert_limit=alert_limit,
+            tank_id=tank_id,
+        )
+
     def set_thresholds(self, thresholds: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             values = self._normalize_thresholds(thresholds)
@@ -295,6 +336,31 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._write_json({"status": "ok", "service": "aquacast-water-quality"})
             elif parsed.path == "/thresholds":
                 self._write_json(self.backend.thresholds())
+            elif parsed.path == "/history":
+                self._write_json(
+                    self.backend.history(
+                        hours=self._query_float(query, "hours", 4.0),
+                        limit=self._query_int(query, "limit", 7200),
+                        tank_id=self._query_value(query, "tank_id") or None,
+                    )
+                )
+            elif parsed.path == "/threshold-alerts":
+                self._write_json(
+                    self.backend.threshold_alerts(
+                        hours=self._query_float(query, "hours", 4.0),
+                        limit=self._query_int(query, "limit", 200),
+                        tank_id=self._query_value(query, "tank_id") or None,
+                    )
+                )
+            elif parsed.path == "/llm-context":
+                self._write_json(
+                    self.backend.llm_context(
+                        hours=self._query_float(query, "hours", 4.0),
+                        limit=self._query_int(query, "limit", 7200),
+                        alert_limit=self._query_int(query, "alert_limit", 200),
+                        tank_id=self._query_value(query, "tank_id") or None,
+                    )
+                )
             elif parsed.path == "/snapshot":
                 self._write_json(self.backend.snapshot(tank_key))
             elif parsed.path == "/sensor":
@@ -353,6 +419,18 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not values:
             return ""
         return str(values[0]).strip()
+
+    def _query_float(self, query: dict[str, list[str]], name: str, default: float) -> float:
+        try:
+            return float(self._query_value(query, name) or default)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _query_int(self, query: dict[str, list[str]], name: str, default: int) -> int:
+        try:
+            return int(self._query_value(query, name) or default)
+        except (TypeError, ValueError):
+            return int(default)
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")
