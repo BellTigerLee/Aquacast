@@ -42,6 +42,8 @@ DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve(
 
 _RUNTIME_MODULE_NAME = "test_aquacast_runtime_main"
 _RUNTIME_REGISTRY_NAME = "_aquacast_runtime_modules"
+_WQ_BANDS_MODULE_NAME = "aquacast_water_quality_bands_for_extension"
+_wq_bands_module = None
 
 
 def _stop_runtime_module(module):
@@ -116,6 +118,26 @@ def _get_runtime_config(name, default=None):
     return getattr(module, name, default)
 
 
+def _get_wq_bands_module():
+    global _wq_bands_module
+    if _wq_bands_module is not None:
+        return _wq_bands_module
+    bands_path = Path(__file__).resolve().parents[2] / "water_quality_bands.py"
+    spec = importlib.util.spec_from_file_location(_WQ_BANDS_MODULE_NAME, bands_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load water-quality bands module: {bands_path}")
+    module = importlib.util.module_from_spec(spec)
+    old_dont_write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = old_dont_write_bytecode
+    _wq_bands_module = module
+    return module
+
+
 async def _load_layout(layout_file: str, keep_windows_open=False):
     """Loads a provided layout file and ensures the viewport is set to FILL."""
     try:
@@ -172,6 +194,17 @@ class CreateSetupExtension(omni.ext.IExt):
     }
     _METRIC_DASHBOARD_SPECS = (
         {
+            "key": "temperature_c",
+            "label": "Water Temperature",
+            "short": "Temp",
+            "unit": "C",
+            "default_threshold": 18.0,
+            "mode": "max",
+            "range": (6.0, 22.0),
+            "min_span": 0.5,
+            "color": 0xFFFF7043,
+        },
+        {
             "key": "dissolved_oxygen_mg_l",
             "label": "Dissolved Oxygen",
             "short": "DO",
@@ -192,6 +225,17 @@ class CreateSetupExtension(omni.ext.IExt):
             "range": (0.0, 3.0),
             "min_span": 0.05,
             "color": 0xFFFFB74D,
+        },
+        {
+            "key": "nh3_mg_l",
+            "label": "Unionized Ammonia",
+            "short": "NH3",
+            "unit": "mg/L",
+            "default_threshold": 0.0125,
+            "mode": "max",
+            "range": (0.0, 0.05),
+            "min_span": 0.002,
+            "color": 0xFF00E676,
         },
         {
             "key": "ph",
@@ -215,10 +259,76 @@ class CreateSetupExtension(omni.ext.IExt):
             "min_span": 0.5,
             "color": 0xFF81C784,
         },
+        {
+            "key": "alkalinity_mg_l_as_caco3",
+            "label": "Alkalinity",
+            "short": "Alk",
+            "unit": "mg/L CaCO3",
+            "default_threshold": 70.0,
+            "mode": "min",
+            "range": (0.0, 180.0),
+            "min_span": 5.0,
+            "color": 0xFF66BB6A,
+        },
+        {
+            "key": "salinity_ppt",
+            "label": "Salinity",
+            "short": "Salinity",
+            "unit": "ppt",
+            "default_threshold": 0.5,
+            "mode": "max",
+            "range": (0.0, 2.0),
+            "min_span": 0.05,
+            "color": 0xFF26C6DA,
+        },
+        {
+            "key": "turbidity_ntu",
+            "label": "Turbidity",
+            "short": "Turb",
+            "unit": "NTU",
+            "default_threshold": 5.0,
+            "mode": "max",
+            "range": (0.0, 60.0),
+            "min_span": 1.0,
+            "color": 0xFFD4A056,
+        },
+        {
+            "key": "nitrite_mg_l",
+            "label": "Nitrite",
+            "short": "NO2",
+            "unit": "mg/L",
+            "default_threshold": 0.1,
+            "mode": "max",
+            "range": (0.0, 1.0),
+            "min_span": 0.02,
+            "color": 0xFFEF5350,
+        },
+        {
+            "key": "nitrate_mg_l",
+            "label": "Nitrate",
+            "short": "NO3",
+            "unit": "mg/L",
+            "default_threshold": 100.0,
+            "mode": "max",
+            "range": (0.0, 150.0),
+            "min_span": 5.0,
+            "color": 0xFF8D6E63,
+        },
     )
     _METRIC_DASHBOARD_THRESHOLD_COLOR = 0xFFE53935
     _METRIC_DASHBOARD_BACKGROUND_COLOR = 0xFF111820
     _METRIC_DASHBOARD_GRID_COLOR = 0xFF263241
+    _METRIC_DASHBOARD_STATE_COLORS = {
+        "healthy": 0xFF00C853,
+        "warn": 0xFFFFB300,
+        "critical": 0xFFE53935,
+        "unknown": 0xFF808080,
+    }
+    _METRIC_DASHBOARD_BAND_COLORS = {
+        "healthy": 0xFF10251C,
+        "warn": 0xFF302812,
+        "critical": 0xFF301419,
+    }
 
     def on_startup(self, _ext_id):
         """
@@ -1345,41 +1455,19 @@ class CreateSetupExtension(omni.ext.IExt):
 
 
     def _default_metric_thresholds(self):
+        bands = _get_wq_bands_module()
         configured = _get_runtime_config("WQ_METRIC_DASHBOARD_THRESHOLDS", {}) or {}
-        thresholds = {}
-        for spec in self._METRIC_DASHBOARD_SPECS:
-            key = spec["key"]
-            item = configured.get(key, {}) if isinstance(configured, dict) else {}
-            if not isinstance(item, dict):
-                item = {"value": item}
-            try:
-                value = float(item.get("value", spec["default_threshold"]))
-            except (TypeError, ValueError):
-                value = float(spec["default_threshold"])
-            mode = str(item.get("mode", spec["mode"])).strip().lower()
-            if mode not in {"min", "max"}:
-                mode = str(spec["mode"])
-            thresholds[key] = {"value": value, "mode": mode}
-        return thresholds
+        return bands.normalize_bands(configured)
 
     def _normalize_metric_thresholds(self, thresholds):
+        bands = _get_wq_bands_module()
+        values = self._default_metric_thresholds()
         raw = thresholds.get("thresholds") if isinstance(thresholds, dict) and "thresholds" in thresholds else thresholds
         raw = raw if isinstance(raw, dict) else {}
-        values = self._default_metric_thresholds()
-        for spec in self._METRIC_DASHBOARD_SPECS:
-            key = spec["key"]
-            item = raw.get(key, values[key])
-            if not isinstance(item, dict):
-                item = {"value": item, "mode": values[key].get("mode", spec["mode"])}
-            try:
-                value = float(item.get("value", values[key]["value"]))
-            except (TypeError, ValueError):
-                value = float(values[key]["value"])
-            mode = str(item.get("mode", values[key].get("mode", spec["mode"]))).strip().lower()
-            if mode not in {"min", "max"}:
-                mode = str(spec["mode"])
-            values[key] = {"value": value, "mode": mode}
-        return values
+        for key, value in raw.items():
+            if key in values:
+                values[key] = value
+        return bands.normalize_bands(values)
 
     def _dashboard_metric_specs(self):
         configured = _get_runtime_config(
@@ -1466,15 +1554,15 @@ class CreateSetupExtension(omni.ext.IExt):
                         self._metrics_tank_index = self._clamp_index(self._metrics_tank_index, self._metrics_tank_labels)
                         self._metrics_tank_combo = ui.ComboBox(self._metrics_tank_index, *(self._metrics_tank_labels or ["(no tanks)"]))
                         ui.Button("Refresh", width=80, clicked_fn=lambda: self._refresh_metrics_dashboard(rebuild=True))
-                        ui.Button("Save Thresholds", width=130, clicked_fn=self._save_metric_thresholds)
+                        ui.Button("Save Bands", width=110, clicked_fn=self._save_metric_thresholds)
                     self._metrics_status_label = ui.Label("Waiting for water-quality data", height=24, word_wrap=True)
                     for spec in self._dashboard_metric_specs():
                         self._build_metric_dashboard_panel(spec)
 
     def _build_metric_dashboard_panel(self, spec):
         key = spec["key"]
-        threshold = self._metrics_thresholds.get(key, {"value": spec["default_threshold"], "mode": spec["mode"]})
-        with ui.ZStack(height=164):
+        threshold = self._metrics_thresholds.get(key, {})
+        with ui.ZStack(height=178):
             ui.Rectangle(style={"background_color": 0xFF0B111A, "border_color": self._METRIC_DASHBOARD_GRID_COLOR, "border_width": 1})
             with ui.VStack(spacing=4):
                 with ui.HStack(height=24, spacing=6):
@@ -1483,19 +1571,7 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._metrics_range_labels[key] = ui.Label("range --", width=150)
                     state_frame = ui.Frame(width=70, height=20)
                     self._metrics_state_frames[key] = state_frame
-                with ui.HStack(height=28, spacing=6):
-                    mode_label = "Min" if threshold.get("mode", spec["mode"]) == "min" else "Max"
-                    ui.Label(f"{mode_label} threshold", width=120)
-                    field = ui.FloatField(width=92)
-                    try:
-                        field.model.set_value(float(threshold.get("value", spec["default_threshold"])))
-                    except Exception:
-                        pass
-                    self._metrics_threshold_fields[key] = field
-                    unit = str(spec.get("unit") or "")
-                    ui.Label(unit, width=48)
-                    ui.Button("Save", width=62, clicked_fn=self._save_metric_thresholds)
-                    ui.Label("red line = threshold", height=22)
+                ui.Label(self._metric_band_legend(threshold), height=34, word_wrap=True)
                 chart_frame = ui.Frame(height=104)
                 self._metrics_chart_frames[key] = chart_frame
 
@@ -1508,12 +1584,6 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _save_metric_thresholds(self):
         values = self._normalize_metric_thresholds(self._metrics_thresholds)
-        for spec in self._METRIC_DASHBOARD_SPECS:
-            key = spec["key"]
-            values[key] = {
-                "value": self._metric_threshold_value(spec),
-                "mode": values.get(key, {}).get("mode", spec["mode"]),
-            }
         if self._aquacast_main and hasattr(self._aquacast_main, "set_water_quality_metric_thresholds"):
             try:
                 result = self._aquacast_main.set_water_quality_metric_thresholds(values)
@@ -1523,7 +1593,7 @@ class CreateSetupExtension(omni.ext.IExt):
             result = {"status": "error", "error": "threshold API unavailable"}
         if isinstance(result, dict) and result.get("status") == "ok":
             self._metrics_thresholds = self._normalize_metric_thresholds(result.get("thresholds", values))
-            self._set_metrics_status("Thresholds saved")
+            self._set_metrics_status("Bands saved")
             self._on_metrics_dashboard_update(None, force=True)
         else:
             error = result.get("error", result.get("status", "unknown")) if isinstance(result, dict) else "unknown"
@@ -1581,7 +1651,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _update_metric_panel(self, spec, value, history):
         key = spec["key"]
-        threshold = self._metric_threshold_value(spec)
+        threshold = self._metrics_thresholds.get(key, {})
         label = self._metrics_current_labels.get(key)
         if label is not None:
             label.text = f"{spec['short']} {self._format_metric_value(spec, value)}"
@@ -1592,6 +1662,18 @@ class CreateSetupExtension(omni.ext.IExt):
         if range_label is not None:
             range_label.text = f"range {y_min:.2f} - {y_max:.2f}"
         self._draw_metric_chart(spec, history, threshold, y_min, y_max, color)
+
+    def _metric_band_legend(self, threshold):
+        bands = _get_wq_bands_module()
+        parts = []
+        labels = (("healthy", "Healthy"), ("warn", "Warn"), ("critical", "Critical"))
+        for state, label in labels:
+            conditions = threshold.get(state, []) if isinstance(threshold, dict) else []
+            if not conditions:
+                continue
+            text = " or ".join(bands.condition_label(condition) for condition in conditions)
+            parts.append(f"{label}: {text}")
+        return " | ".join(parts) if parts else "Bands unavailable"
 
     def _metric_threshold_value(self, spec):
         key = spec["key"]
@@ -1610,11 +1692,11 @@ class CreateSetupExtension(omni.ext.IExt):
             return float(spec["default_threshold"])
 
     def _metric_state(self, spec, value, threshold):
-        mode = self._metrics_thresholds.get(spec["key"], {}).get("mode", spec["mode"])
-        violated = value < threshold if mode == "min" else value > threshold
-        if violated:
-            return ("LOW" if mode == "min" else "HIGH"), 0xFFE53935
-        return "OK", 0xFF00C853
+        bands = _get_wq_bands_module()
+        result = bands.metric_state(spec["key"], value, {spec["key"]: threshold})
+        state = str(result.get("state") or "unknown")
+        label = "OK" if state == "healthy" else state.upper()
+        return label, self._METRIC_DASHBOARD_STATE_COLORS.get(state, self._METRIC_DASHBOARD_STATE_COLORS["unknown"])
 
     def _format_metric_value(self, spec, value):
         unit = str(spec.get("unit") or "")
@@ -1629,8 +1711,10 @@ class CreateSetupExtension(omni.ext.IExt):
                 values.append(float(value))
             except (TypeError, ValueError):
                 pass
+        bands = _get_wq_bands_module()
+        values.extend(bands.condition_values(threshold))
         if not values:
-            values = [float(threshold)]
+            values = [0.0]
         y_min = min(values)
         y_max = max(values)
         min_span = max(1e-6, float(spec.get("min_span", 0.1)))
@@ -1660,12 +1744,56 @@ class CreateSetupExtension(omni.ext.IExt):
             values = values + values[:1]
         if len(values) < 2:
             values = [0.0, 0.0]
-        threshold_y = min(max(float(threshold), float(y_min)), float(y_max))
         with frame:
             with ui.ZStack(height=100):
                 ui.Rectangle(style={"background_color": self._METRIC_DASHBOARD_BACKGROUND_COLOR, "border_color": self._METRIC_DASHBOARD_GRID_COLOR, "border_width": 1})
+                self._draw_metric_band_background(threshold, y_min, y_max, 98)
                 self._plot_metric_line(values, y_min, y_max, spec.get("color", state_color), 98)
-                self._draw_metric_threshold_line(threshold_y, y_min, y_max, 98)
+
+    def _draw_metric_band_background(self, threshold, y_min, y_max, height):
+        if not isinstance(threshold, dict):
+            return
+        for state in ("healthy", "warn", "critical"):
+            color = self._METRIC_DASHBOARD_BAND_COLORS.get(state)
+            if color is None:
+                continue
+            for condition in threshold.get(state, []) or []:
+                interval = self._condition_interval(condition, y_min, y_max)
+                if interval is not None:
+                    self._draw_metric_band_region(interval[0], interval[1], y_min, y_max, height, color)
+
+    def _condition_interval(self, condition, y_min, y_max):
+        if not isinstance(condition, dict):
+            return None
+        low = float(y_min)
+        high = float(y_max)
+        if "gt" in condition:
+            low = max(low, float(condition["gt"]))
+        if "gte" in condition:
+            low = max(low, float(condition["gte"]))
+        if "lt" in condition:
+            high = min(high, float(condition["lt"]))
+        if "lte" in condition:
+            high = min(high, float(condition["lte"]))
+        if high <= low:
+            return None
+        return low, high
+
+    def _draw_metric_band_region(self, low, high, y_min, y_max, height, color):
+        span = max(1e-9, float(y_max) - float(y_min))
+        low_norm = max(0.0, min(1.0, (float(low) - float(y_min)) / span))
+        high_norm = max(0.0, min(1.0, (float(high) - float(y_min)) / span))
+        if high_norm <= low_norm:
+            return
+        top_height = max(0, int(round((1.0 - high_norm) * max(1, int(height)))))
+        band_height = max(1, int(round((high_norm - low_norm) * max(1, int(height)))))
+        bottom_height = max(0, int(height) - top_height - band_height)
+        with ui.VStack(height=height):
+            if top_height > 0:
+                ui.Spacer(height=top_height)
+            ui.Rectangle(height=band_height, style={"background_color": color})
+            if bottom_height > 0:
+                ui.Spacer(height=bottom_height)
 
     def _draw_metric_threshold_line(self, threshold, y_min, y_max, height):
         span = max(1e-9, float(y_max) - float(y_min))
@@ -1880,7 +2008,7 @@ class CreateSetupExtension(omni.ext.IExt):
                     with ui.HStack(height=26, spacing=6):
                         ui.Label("Species:", width=70)
                         self._fish_species_combo = ui.ComboBox(0, *self._fish_species_labels)
-                    self._fish_count_label = ui.Label("Total 0/30", height=24)
+                    self._fish_count_label = ui.Label("Total 0/30 · Alive 0 · Dead 0", height=24)
                     with ui.HStack(height=26, spacing=6):
                         ui.Label("Qty:", width=70)
                         self._fish_qty_field = ui.IntField()
@@ -1945,7 +2073,7 @@ class CreateSetupExtension(omni.ext.IExt):
         max_total = int(_get_runtime_config("MAX_FISH_PER_TANK", 30) or 30)
         if not tank_path:
             if self._fish_count_label is not None:
-                self._fish_count_label.text = f"Total 0/{max_total}"
+                self._fish_count_label.text = f"Total 0/{max_total} · Alive 0 · Dead 0"
             self._set_fish_button_enabled(self._fish_add_button, False)
             self._set_fish_button_enabled(self._fish_delete_button, False)
             self._set_fish_button_enabled(self._fish_clear_button, False)
@@ -1958,12 +2086,24 @@ class CreateSetupExtension(omni.ext.IExt):
             counts = {"total": 0, "by_species": {}}
             self._set_fish_status(f"count failed: {exc}")
         total = int(counts.get("total", 0))
+        alive = int(counts.get("alive", total))
+        dead = int(counts.get("dead", max(0, total - alive)))
         by_species = counts.get("by_species", {}) or {}
-        parts = [f"Total {total}/{max_total}"]
+        alive_by_species = counts.get("alive_by_species", {}) or by_species
+        wq_state_counts = counts.get("wq_state_counts", {}) or {}
+        parts = [f"Total {total}/{max_total}", f"Alive {alive}", f"Dead {dead}"]
+        if alive > 0:
+            healthy = int(wq_state_counts.get("healthy", 0))
+            warn = int(wq_state_counts.get("warn", 0))
+            critical = int(wq_state_counts.get("critical", 0))
+            parts.append(f"WQ H/W/C {healthy}/{warn}/{critical}")
         for item in self._fish_species:
             species_id = item.get("id")
             label = item.get("label") or species_id
-            parts.append(f"{label} {int(by_species.get(species_id, 0))}")
+            species_total = int(by_species.get(species_id, 0))
+            species_alive = int(alive_by_species.get(species_id, species_total))
+            value = f"{species_alive}/{species_total}" if dead > 0 else f"{species_total}"
+            parts.append(f"{label} {value}")
         if self._fish_count_label is not None:
             self._fish_count_label.text = " · ".join(parts)
         self._set_fish_button_enabled(self._fish_add_button, total < max_total)

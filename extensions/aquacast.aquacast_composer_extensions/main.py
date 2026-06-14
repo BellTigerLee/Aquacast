@@ -18,12 +18,16 @@ if str(_HERE) not in sys.path:
 
 import dynamic_fish_spawn  # noqa: E402
 import fish_dynamics  # noqa: E402
+import fish_survival  # noqa: E402
 import thermal_dynamics  # noqa: E402
+import water_quality_bands  # noqa: E402
 import water_quality_backend_client  # noqa: E402
 import water_quality_dynamics  # noqa: E402
 import water_quality_model  # noqa: E402
 
 dynamic_fish_spawn = importlib.reload(dynamic_fish_spawn)
+fish_survival = importlib.reload(fish_survival)
+water_quality_bands = importlib.reload(water_quality_bands)
 water_quality_backend_client = importlib.reload(water_quality_backend_client)
 water_quality_dynamics = importlib.reload(water_quality_dynamics)
 water_quality_model = importlib.reload(water_quality_model)
@@ -392,38 +396,20 @@ def get_quality_snapshot(tank_path=None):
     return _water_quality_controller.snapshot(tank_path=tank_path)
 
 
-_DEFAULT_WQ_METRIC_THRESHOLDS = {
-    "dissolved_oxygen_mg_l": {"value": 8.0, "mode": "min"},
-    "tan_mg_l": {"value": 2.0, "mode": "max"},
-    "ph": {"value": 8.5, "mode": "max"},
-    "co2_mg_l": {"value": 15.0, "mode": "max"},
-}
+_DEFAULT_WQ_METRIC_THRESHOLDS = water_quality_bands.DEFAULT_WQ_METRIC_BANDS
 
 
 def _normalize_metric_thresholds(thresholds=None):
     configured = get_global_config("WQ_METRIC_DASHBOARD_THRESHOLDS", _DEFAULT_WQ_METRIC_THRESHOLDS)
     defaults = configured if isinstance(configured, dict) else _DEFAULT_WQ_METRIC_THRESHOLDS
+    normalized_defaults = water_quality_bands.normalize_bands(defaults)
     raw = thresholds.get("thresholds") if isinstance(thresholds, dict) and "thresholds" in thresholds else thresholds
-    raw = raw if isinstance(raw, dict) else {}
-    normalized = {}
-    for key, fallback in _DEFAULT_WQ_METRIC_THRESHOLDS.items():
-        default = defaults.get(key, fallback) if isinstance(defaults, dict) else fallback
-        item = raw.get(key, default)
-        if isinstance(item, dict):
-            value = item.get("value", default.get("value", fallback["value"]))
-            mode = item.get("mode", default.get("mode", fallback["mode"]))
-        else:
-            value = item
-            mode = default.get("mode", fallback["mode"]) if isinstance(default, dict) else fallback["mode"]
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            value = float(fallback["value"])
-        mode = str(mode or fallback["mode"]).strip().lower()
-        if mode not in {"min", "max"}:
-            mode = fallback["mode"]
-        normalized[key] = {"value": value, "mode": mode}
-    return normalized
+    raw = raw if isinstance(raw, dict) else normalized_defaults
+    merged = dict(normalized_defaults)
+    for key, value in raw.items():
+        if key in merged:
+            merged[key] = value
+    return water_quality_bands.normalize_bands(merged)
 
 
 def _metric_thresholds_json_path():
@@ -1036,6 +1022,7 @@ def _reset_and_spawn_fish_entries(
                 )
                 fish_prim.SetCustomDataByKey("aquacast:species", species_id)
                 fish_prim.SetCustomDataByKey("aquacast:weight_kg", weight_kg)
+                _set_fish_alive_defaults(fish_prim)
 
                 asset_prim = stage.DefinePrim(asset_prim_path, "Xform")
                 asset_prim.SetActive(True)
@@ -1204,6 +1191,145 @@ def _iter_fish_prims_in_tank(stage, tank_path):
     return fish_prims
 
 
+def _fish_is_alive(fish_prim):
+    try:
+        value = fish_prim.GetCustomDataByKey("aquacast:alive")
+    except Exception:
+        return True
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "dead", "no"}
+    return bool(value)
+
+
+def _fish_is_visible(fish_prim):
+    try:
+        attr = UsdGeom.Imageable(fish_prim).GetVisibilityAttr()
+        value = attr.Get() if attr else None
+        return value != UsdGeom.Tokens.invisible
+    except Exception:
+        return True
+
+
+def _set_fish_visibility(fish_prim, visible):
+    try:
+        value = UsdGeom.Tokens.inherited if visible else UsdGeom.Tokens.invisible
+        UsdGeom.Imageable(fish_prim).CreateVisibilityAttr(value).Set(value)
+    except Exception as exc:
+        carb.log_warn(f"[Aquacast] Fish visibility update failed path={fish_prim.GetPath()}: {exc}")
+
+
+def _set_fish_alive_defaults(fish_prim):
+    fish_prim.SetCustomDataByKey("aquacast:alive", True)
+    fish_prim.SetCustomDataByKey("aquacast:stress_ticks", 0)
+    fish_prim.SetCustomDataByKey("aquacast:stress_reason", "")
+    fish_prim.SetCustomDataByKey("aquacast:wq_state", "healthy")
+    fish_prim.SetCustomDataByKey("aquacast:wq_state_reason", "")
+    fish_prim.SetCustomDataByKey("aquacast:dead_reason", "")
+    _set_fish_visibility(fish_prim, True)
+
+
+def _fish_stress_ticks(fish_prim):
+    try:
+        return max(0, int(float(fish_prim.GetCustomDataByKey("aquacast:stress_ticks") or 0)))
+    except (TypeError, ValueError):
+        return 0
+    except Exception:
+        return 0
+
+
+def _fish_wq_state(fish_prim):
+    if not _fish_is_alive(fish_prim):
+        return "dead"
+    try:
+        value = str(fish_prim.GetCustomDataByKey("aquacast:wq_state") or "healthy").strip().lower()
+    except Exception:
+        value = "healthy"
+    return value if value in {"healthy", "warn", "critical"} else "healthy"
+
+
+def _mark_fish_dead(fish_prim, reason, stress_ticks):
+    fish_prim.SetCustomDataByKey("aquacast:alive", False)
+    fish_prim.SetCustomDataByKey("aquacast:stress_ticks", max(0, int(stress_ticks)))
+    fish_prim.SetCustomDataByKey("aquacast:stress_reason", str(reason or ""))
+    fish_prim.SetCustomDataByKey("aquacast:wq_state", "dead")
+    fish_prim.SetCustomDataByKey("aquacast:wq_state_reason", str(reason or "water_quality"))
+    fish_prim.SetCustomDataByKey("aquacast:dead_reason", str(reason or "water_quality"))
+    _set_fish_visibility(fish_prim, False)
+
+
+def _fish_survival_thresholds():
+    thresholds = get_global_config("FISH_SURVIVAL_THRESHOLDS", None)
+    return thresholds if isinstance(thresholds, dict) else fish_survival.DEFAULT_SHARED_SALMON_THRESHOLDS
+
+
+def _fish_survival_death_ticks():
+    try:
+        return max(1, int(float(get_global_config("FISH_SURVIVAL_DEATH_TICKS", 24))))
+    except (TypeError, ValueError):
+        return 24
+
+
+def _advance_fish_survival_for_tank(stage, tank_path, snapshot):
+    if not bool(get_global_config("ENABLE_FISH_SURVIVAL", True)):
+        return {"status": "disabled", "dead": 0, "critical": 0}
+    if stage is None:
+        return {"status": "no stage", "dead": 0, "critical": 0}
+    if not isinstance(snapshot, dict) or snapshot.get("status") not in {None, "ok"}:
+        return {"status": "water quality snapshot is not ready", "dead": 0, "critical": 0}
+
+    alive_prims = [prim for prim in _iter_fish_prims_in_tank(stage, str(tank_path)) if _fish_is_alive(prim)]
+    if not alive_prims:
+        return {"status": "ok", "alive": 0, "dead": 0, "critical": 0}
+
+    death_ticks = _fish_survival_death_ticks()
+    thresholds = _fish_survival_thresholds()
+    session_layer = stage.GetSessionLayer()
+    edit_target = session_layer if session_layer is not None else stage.GetRootLayer()
+    dead_paths = []
+    dead_reasons = []
+    critical_count = 0
+    with Usd.EditContext(stage, edit_target):
+        for prim in alive_prims:
+            state = fish_survival.next_survival_state(
+                snapshot,
+                _fish_stress_ticks(prim),
+                death_ticks,
+                thresholds,
+            )
+            ticks = max(0, int(state.get("stress_ticks", 0)))
+            reason = str(state.get("reason", "") or "")
+            wq_state = str(state.get("wq_state", "healthy") or "healthy")
+            wq_reason = str(state.get("wq_state_reason", reason) or reason)
+            if state.get("critical"):
+                critical_count += 1
+            if state.get("dead"):
+                _mark_fish_dead(prim, reason, ticks)
+                dead_paths.append(prim.GetPath().pathString)
+                dead_reasons.append(reason or "water_quality")
+            else:
+                prim.SetCustomDataByKey("aquacast:stress_ticks", ticks)
+                prim.SetCustomDataByKey("aquacast:stress_reason", reason)
+                prim.SetCustomDataByKey("aquacast:wq_state", wq_state)
+                prim.SetCustomDataByKey("aquacast:wq_state_reason", wq_reason)
+
+    if dead_paths:
+        carb.log_warn(
+            f"[Aquacast] Fish mortality: tank={tank_path} dead={len(dead_paths)} "
+            f"reason={dead_reasons[0] if dead_reasons else 'water_quality'}"
+        )
+        _fish_change_refresh()
+    return {
+        "status": "ok",
+        "alive": len(alive_prims) - len(dead_paths),
+        "dead": len(dead_paths),
+        "critical": critical_count,
+        "dead_paths": dead_paths,
+        "dead_reasons": dead_reasons,
+    }
+
+
 def _asset_reference_text(asset_prim):
     if not asset_prim or not asset_prim.IsValid():
         return ""
@@ -1254,15 +1380,44 @@ def count_fish_in_tank(tank_path: str):
     stage = omni.usd.get_context().get_stage()
     species = get_fish_species()
     by_species = {item["id"]: 0 for item in species}
+    alive_by_species = {item["id"]: 0 for item in species}
+    dead_by_species = {item["id"]: 0 for item in species}
+    wq_state_counts = {"healthy": 0, "warn": 0, "critical": 0}
     if stage is None:
-        return {"total": 0, "by_species": by_species}
+        return {
+            "total": 0,
+            "alive": 0,
+            "dead": 0,
+            "by_species": by_species,
+            "alive_by_species": alive_by_species,
+            "dead_by_species": dead_by_species,
+            "wq_state_counts": wq_state_counts,
+        }
 
     total = 0
+    alive = 0
+    dead = 0
     for fish_prim in _iter_fish_prims_in_tank(stage, str(tank_path)):
         total += 1
         species_id = _species_for_fish_prim(fish_prim, species)
         by_species[species_id] = by_species.get(species_id, 0) + 1
-    return {"total": total, "by_species": by_species}
+        if _fish_is_alive(fish_prim):
+            alive += 1
+            alive_by_species[species_id] = alive_by_species.get(species_id, 0) + 1
+            wq_state = _fish_wq_state(fish_prim)
+            wq_state_counts[wq_state] = wq_state_counts.get(wq_state, 0) + 1
+        else:
+            dead += 1
+            dead_by_species[species_id] = dead_by_species.get(species_id, 0) + 1
+    return {
+        "total": total,
+        "alive": alive,
+        "dead": dead,
+        "by_species": by_species,
+        "alive_by_species": alive_by_species,
+        "dead_by_species": dead_by_species,
+        "wq_state_counts": wq_state_counts,
+    }
 
 
 def _fish_species_weight_kg(species_id, species_items=None):
@@ -1280,20 +1435,29 @@ def _fish_species_weight_kg(species_id, species_items=None):
 def fish_stock_for_tank(tank_path: str):
     species = get_fish_species()
     by_species = {item["id"]: 0 for item in species}
+    alive = 0
+    dead = 0
     total = 0
     biomass_kg = 0.0
     stage = omni.usd.get_context().get_stage()
     if stage is not None:
         for fish_prim in _iter_fish_prims_in_tank(stage, str(tank_path)):
             total += 1
+            if not _fish_is_alive(fish_prim):
+                dead += 1
+                continue
+            alive += 1
             species_id = _species_for_fish_prim(fish_prim, species)
             by_species[species_id] = by_species.get(species_id, 0) + 1
             biomass_kg += _weight_for_fish_prim(fish_prim, species_id, species)
-    mean_weight_kg = biomass_kg / total if total > 0 else max(1e-9, float(get_global_config("WQ_FISH_WEIGHT_KG", 1.0)))
+    mean_weight_kg = biomass_kg / alive if alive > 0 else max(1e-9, float(get_global_config("WQ_FISH_WEIGHT_KG", 1.0)))
     return {
-        "fish_count": float(total),
+        "fish_count": float(alive),
         "fish_weight_kg": float(mean_weight_kg),
         "biomass_kg": float(biomass_kg),
+        "total_fish_count": float(total),
+        "alive_fish_count": float(alive),
+        "dead_fish_count": float(dead),
         "by_species": by_species,
     }
 
@@ -1419,7 +1583,7 @@ def _persist_current_fish_population():
     populations = {}
     for tank_path in list_fish_tanks():
         counts = count_fish_in_tank(tank_path)
-        populations[tank_path] = dict(counts.get("by_species", {}) or {})
+        populations[tank_path] = dict(counts.get("alive_by_species", counts.get("by_species", {})) or {})
     return _write_fish_population_csv(populations)
 
 
@@ -1557,6 +1721,7 @@ def add_fish(tank_path, species_id, count):
                 fish_prim.SetActive(True)
                 fish_prim.SetCustomDataByKey("aquacast:species", str(item["id"]))
                 fish_prim.SetCustomDataByKey("aquacast:weight_kg", max(1e-9, float(item.get("weight_kg", get_global_config("WQ_FISH_WEIGHT_KG", 1.0)))))
+                _set_fish_alive_defaults(fish_prim)
                 for child in list(fish_prim.GetChildren()):
                     _remove_composed_child(stage, child.GetPath())
 
@@ -1991,7 +2156,7 @@ class FishSwimController:
                 if not path or not _topology_node_matches_fish_root(node, pattern, base_name):
                     continue
                 prim = stage.GetPrimAtPath(path)
-                if prim and prim.IsValid():
+                if prim and prim.IsValid() and _fish_is_alive(prim) and _fish_is_visible(prim):
                     topology_fish.append(prim)
             if topology_fish:
                 return sorted(topology_fish, key=lambda prim: prim.GetPath().pathString)
@@ -2003,6 +2168,8 @@ class FishSwimController:
             path = prim.GetPath().pathString
             parent_path = prim.GetPath().GetParentPath().pathString
             if parent_path == "/" or parent_path.endswith("/Fishes"):
+                if not _fish_is_alive(prim) or not _fish_is_visible(prim):
+                    continue
                 fish.append(prim)
         return sorted(fish, key=lambda prim: prim.GetPath().pathString)
 
@@ -4020,6 +4187,24 @@ class WaterQualityController:
             count = len(getattr(controller, "_particle_temperatures", []) or getattr(controller, "_particle_heat_weights", []) or [])
             controller._particle_temperatures = [float(temperature_c)] * count
 
+    def _apply_fish_survival(self, stage):
+        if stage is None or not bool(get_global_config("ENABLE_FISH_SURVIVAL", True)):
+            return {}
+        results = {}
+        for tank_path in list_fish_tanks():
+            try:
+                snapshot = self.snapshot(tank_path=tank_path)
+                result = _advance_fish_survival_for_tank(stage, tank_path, snapshot)
+                if int(result.get("dead", 0) or 0) > 0:
+                    stock_result = _sync_water_quality_stock_for_tank(str(tank_path))
+                    result["stock"] = stock_result.get("stock", {}) if isinstance(stock_result, dict) else {}
+                    result["stock_sync_status"] = stock_result.get("status", "unknown") if isinstance(stock_result, dict) else "unknown"
+                results[str(tank_path)] = result
+            except Exception as exc:
+                carb.log_warn(f"[Aquacast] Fish survival update failed tank={tank_path}: {exc}")
+                results[str(tank_path)] = {"status": "error", "error": str(exc), "dead": 0}
+        return results
+
     def _on_update(self, _event):
         if not self._active:
             return
@@ -4057,6 +4242,9 @@ class WaterQualityController:
         if not self._using_backend:
             for tank_model in list(self._tank_models.values()):
                 tank_model.advance(dt)
+
+        if stage is not None:
+            self._apply_fish_survival(stage)
 
         if temp_controller is not None:
             try:

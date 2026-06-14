@@ -32,6 +32,67 @@ FISH_MANAGEMENT_UI_UPDATE_INTERVAL_SECONDS = 0.5
 ENABLE_FISH_POPULATION_CSV = True
 FISH_POPULATION_CSV_PATH = "/home/netai-sys/cs-project/Aquacast/extensions/aquacast.aquacast_composer_extensions/fish_population.csv"
 SYNC_WQ_STOCK_WITH_FISH_POPULATION = True
+WQ_METRIC_BAND_THRESHOLDS = {
+    "temperature_c": {
+        "healthy": [{"gte": 8.0, "lte": 12.0}],
+        "warn": [{"lt": 8.0}, {"gt": 12.0, "lte": 18.0}],
+        "critical": [{"gt": 18.0}],
+    },
+    "dissolved_oxygen_mg_l": {
+        "healthy": [{"gte": 8.0}],
+        "warn": [{"gte": 5.0, "lt": 8.0}],
+        "critical": [{"lt": 5.0}],
+    },
+    "tan_mg_l": {
+        "healthy": [{"lt": 1.0}],
+        "warn": [{"gte": 1.0, "lte": 3.0}],
+        "critical": [{"gt": 3.0}],
+    },
+    "nh3_mg_l": {
+        "healthy": [{"lt": 0.0125}],
+        "warn": [{"gte": 0.0125, "lte": 0.05}],
+        "critical": [{"gt": 0.05}],
+    },
+    "ph": {
+        "healthy": [{"gte": 6.8, "lte": 8.3}],
+        "warn": [{"gte": 6.0, "lt": 6.8}, {"gt": 8.3, "lte": 9.0}],
+        "critical": [{"lt": 6.0}, {"gt": 9.0}],
+    },
+    "co2_mg_l": {
+        "healthy": [{"gte": 0.0, "lte": 5.0}],
+        "warn": [{"gt": 5.0, "lte": 15.0}],
+        "critical": [{"gt": 15.0}],
+    },
+    "alkalinity_mg_l_as_caco3": {
+        "healthy": [{"gte": 80.0, "lte": 150.0}],
+        "warn": [{"gte": 50.0, "lt": 80.0}, {"gt": 150.0}],
+        "critical": [{"lt": 50.0}],
+    },
+    "salinity_ppt": {
+        "healthy": [{"gte": 0.0, "lte": 0.5}],
+        "warn": [{"gt": 0.5}],
+        "critical": [],
+    },
+    "turbidity_ntu": {
+        "healthy": [{"lt": 5.0}],
+        "warn": [{"gte": 5.0, "lte": 20.0}],
+        "critical": [{"gt": 20.0}],
+    },
+    "nitrite_mg_l": {
+        "healthy": [{"lt": 0.1}],
+        "warn": [{"gte": 0.1, "lte": 1.0}],
+        "critical": [{"gt": 1.0}],
+    },
+    "nitrate_mg_l": {
+        "healthy": [{"lt": 50.0}],
+        "warn": [{"gte": 50.0, "lte": 200.0}],
+        "critical": [{"gt": 200.0}],
+    },
+}
+ENABLE_FISH_SURVIVAL = True
+FISH_SURVIVAL_DEATH_TICKS = 24
+# Mortality is based on sustained Critical band exposure.
+FISH_SURVIVAL_THRESHOLDS = WQ_METRIC_BAND_THRESHOLDS
 FISH_SPECIES = [
     {
         "id": "salmon_1",
@@ -202,13 +263,20 @@ WQ_VIEW_VARIABLE = "temperature"
 ENABLE_WQ_METRICS_DASHBOARD = True
 WQ_METRICS_DASHBOARD_UPDATE_INTERVAL_SECONDS = 0.5
 WQ_METRICS_DASHBOARD_HISTORY_SECONDS = 180.0
-WQ_METRICS_DASHBOARD_METRICS = ["dissolved_oxygen_mg_l", "tan_mg_l", "ph", "co2_mg_l"]
-WQ_METRIC_DASHBOARD_THRESHOLDS = {
-    "dissolved_oxygen_mg_l": {"value": 8.0, "mode": "min"},
-    "tan_mg_l": {"value": 2.0, "mode": "max"},
-    "ph": {"value": 8.5, "mode": "max"},
-    "co2_mg_l": {"value": 15.0, "mode": "max"},
-}
+WQ_METRICS_DASHBOARD_METRICS = [
+    "temperature_c",
+    "dissolved_oxygen_mg_l",
+    "tan_mg_l",
+    "nh3_mg_l",
+    "ph",
+    "co2_mg_l",
+    "alkalinity_mg_l_as_caco3",
+    "salinity_ppt",
+    "turbidity_ntu",
+    "nitrite_mg_l",
+    "nitrate_mg_l",
+]
+WQ_METRIC_DASHBOARD_THRESHOLDS = WQ_METRIC_BAND_THRESHOLDS
 
 # Local LM Studio UI panel integrated into the Aquacast extension.
 ENABLE_LOCAL_LLM_PANEL = True

@@ -1,18 +1,213 @@
 {
+  "alkalinity_mg_l_as_caco3": {
+    "critical": [
+      {
+        "lt": 50.0
+      }
+    ],
+    "healthy": [
+      {
+        "gte": 80.0,
+        "lte": 150.0
+      }
+    ],
+    "warn": [
+      {
+        "gte": 50.0,
+        "lt": 80.0
+      },
+      {
+        "gt": 150.0
+      }
+    ]
+  },
   "co2_mg_l": {
-    "mode": "max",
-    "value": 0.6000000238418579
+    "critical": [
+      {
+        "gt": 15.0
+      }
+    ],
+    "healthy": [
+      {
+        "gte": 0.0,
+        "lte": 5.0
+      }
+    ],
+    "warn": [
+      {
+        "gt": 5.0,
+        "lte": 15.0
+      }
+    ]
   },
   "dissolved_oxygen_mg_l": {
-    "mode": "min",
-    "value": 10.0
+    "critical": [
+      {
+        "lt": 5.0
+      }
+    ],
+    "healthy": [
+      {
+        "gte": 8.0
+      }
+    ],
+    "warn": [
+      {
+        "gte": 5.0,
+        "lt": 8.0
+      }
+    ]
+  },
+  "nitrate_mg_l": {
+    "critical": [
+      {
+        "gt": 200.0
+      }
+    ],
+    "healthy": [
+      {
+        "lt": 50.0
+      }
+    ],
+    "warn": [
+      {
+        "gte": 50.0,
+        "lte": 200.0
+      }
+    ]
+  },
+  "nh3_mg_l": {
+    "critical": [
+      {
+        "gt": 0.05
+      }
+    ],
+    "healthy": [
+      {
+        "lt": 0.0125
+      }
+    ],
+    "warn": [
+      {
+        "gte": 0.0125,
+        "lte": 0.05
+      }
+    ]
+  },
+  "nitrite_mg_l": {
+    "critical": [
+      {
+        "gt": 1.0
+      }
+    ],
+    "healthy": [
+      {
+        "lt": 0.1
+      }
+    ],
+    "warn": [
+      {
+        "gte": 0.1,
+        "lte": 1.0
+      }
+    ]
   },
   "ph": {
-    "mode": "max",
-    "value": 8.5
+    "critical": [
+      {
+        "lt": 6.0
+      },
+      {
+        "gt": 9.0
+      }
+    ],
+    "healthy": [
+      {
+        "gte": 6.8,
+        "lte": 8.3
+      }
+    ],
+    "warn": [
+      {
+        "gte": 6.0,
+        "lt": 6.8
+      },
+      {
+        "gt": 8.3,
+        "lte": 9.0
+      }
+    ]
+  },
+  "salinity_ppt": {
+    "critical": [],
+    "healthy": [
+      {
+        "gte": 0.0,
+        "lte": 0.5
+      }
+    ],
+    "warn": [
+      {
+        "gt": 0.5
+      }
+    ]
   },
   "tan_mg_l": {
-    "mode": "max",
-    "value": 2.0
+    "critical": [
+      {
+        "gt": 3.0
+      }
+    ],
+    "healthy": [
+      {
+        "lt": 1.0
+      }
+    ],
+    "warn": [
+      {
+        "gte": 1.0,
+        "lte": 3.0
+      }
+    ]
+  },
+  "temperature_c": {
+    "critical": [
+      {
+        "gt": 18.0
+      }
+    ],
+    "healthy": [
+      {
+        "gte": 8.0,
+        "lte": 12.0
+      }
+    ],
+    "warn": [
+      {
+        "lt": 8.0
+      },
+      {
+        "gt": 12.0,
+        "lte": 18.0
+      }
+    ]
+  },
+  "turbidity_ntu": {
+    "critical": [
+      {
+        "gt": 20.0
+      }
+    ],
+    "healthy": [
+      {
+        "lt": 5.0
+      }
+    ],
+    "warn": [
+      {
+        "gte": 5.0,
+        "lte": 20.0
+      }
+    ]
   }
 }
