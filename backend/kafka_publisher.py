@@ -41,6 +41,11 @@ class KafkaPublisher:
         self.bootstrap = env.get("AQUACAST_KAFKA_BOOTSTRAP_SERVERS", "localhost:29092")
         self.topic = env.get("AQUACAST_KAFKA_TOPIC", "aquacast.water_quality")
         self.threshold_alert_topic = env.get("AQUACAST_KAFKA_THRESHOLD_ALERT_TOPIC", "aquacast.threshold_alert")
+        self.publish_interval_s = _float_env(
+            env,
+            "AQUACAST_KAFKA_PUBLISH_INTERVAL_SECONDS",
+            _float_env(env, "AQUACAST_KAFKA_MIN_PUBLISH_INTERVAL_SECONDS", 1.0),
+        )
         self.tank_id = env.get("AQUACAST_KAFKA_TANK_ID", "tank-01")
         self.client_id = env.get("AQUACAST_KAFKA_CLIENT_ID", "aquacast-wq-backend")
         self.acks = env.get("AQUACAST_KAFKA_ACKS", "1")
@@ -56,6 +61,7 @@ class KafkaPublisher:
         self._store: aquacast_db.WideMessageStore | None = None
         self._seq = 0
         self._dropped = 0
+        self._last_state_publish_ms: int | None = None
         self._threshold_alert_state: dict[str, tuple[tuple[str, ...], int]] = {}
 
         if self.db_enabled:
@@ -107,14 +113,17 @@ class KafkaPublisher:
 
     def publish_state(self, backend: Any) -> None:
         event_time_ms = int(time.time() * 1000)
+        if not self._state_publish_due(event_time_ms):
+            return
         try:
-            readings = backend.all_sensors()["readings"]
+            readings = self._publishable_readings(backend.all_sensors().get("readings", []))
             root_snapshot = backend.snapshot()
             sim_time_h = root_snapshot.get("sim_time_h")
         except Exception as exc:
             log.warning("[Aquacast Kafka] could not read backend state: %s", exc)
             return
 
+        self._last_state_publish_ms = event_time_ms
         references = {
             self._reading_tank_id(reading): reading
             for reading in readings
@@ -127,8 +136,59 @@ class KafkaPublisher:
         if self._producer is not None:
             self._producer.poll(0)
 
+    def _state_publish_due(self, event_time_ms: int) -> bool:
+        interval_ms = max(0, int(self.publish_interval_s * 1000.0))
+        if interval_ms <= 0 or self._last_state_publish_ms is None:
+            return True
+        if event_time_ms < self._last_state_publish_ms:
+            return True
+        return event_time_ms - self._last_state_publish_ms >= interval_ms
+
+    def _publishable_readings(self, readings: Any) -> list[dict]:
+        if not isinstance(readings, list):
+            return []
+
+        tank_readings = [reading for reading in readings if self._has_tank_identity(reading)]
+        candidates = tank_readings or readings
+        publishable = []
+        seen = set()
+        for reading in candidates:
+            if not isinstance(reading, dict):
+                continue
+            sensor_name = str(reading.get("sensor_name") or "").strip()
+            if not sensor_name:
+                continue
+            key = (self._reading_tank_id(reading), sensor_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            publishable.append(reading)
+        return publishable
+
+    def _has_tank_identity(self, reading: Any) -> bool:
+        return isinstance(reading, dict) and bool(str(reading.get("tank_id") or reading.get("tank_path") or "").strip())
+
     def _reading_tank_id(self, reading: dict) -> str:
-        return str(reading.get("tank_id") or self.tank_id)
+        tank_id = str(reading.get("tank_id") or "").strip()
+        if tank_id:
+            return tank_id
+        tank_path = str(reading.get("tank_path") or "").strip()
+        if tank_path:
+            return self._derive_tank_id(tank_path)
+        return str(self.tank_id)
+
+    def _derive_tank_id(self, tank_path: str) -> str:
+        parts = [part for part in str(tank_path).strip("/").split("/") if part]
+        if parts and parts[-1] == "Water":
+            parts = parts[:-1]
+        generic = {"Root", "scene", "Meshes", "Model", "Components", "Component", "Water"}
+        for part in reversed(parts):
+            if part in generic:
+                continue
+            if part.startswith("Group") and part[5:].isdigit():
+                continue
+            return part
+        return str(self.tank_id)
 
     def _publish_reading(self, reading: dict, event_time_ms: int, sim_time_h: Any, reference: dict | None, tank_id: str) -> None:
         self._seq += 1
