@@ -15,14 +15,24 @@ services:
       timeout: 5s
       retries: 30
 
-  ollama-pull:
+  ollama-pull-model:
     image: ollama/ollama:latest
     depends_on:
       ollama:
         condition: service_healthy
     environment:
       OLLAMA_HOST: http://ollama:11434
-    command: sh -lc "ollama pull ${OLLAMA_MODEL:-gemma4} && ollama pull ${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+    command: pull ${OLLAMA_MODEL:-gemma4}
+    restart: on-failure
+
+  ollama-pull-embed:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: pull ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
     restart: on-failure
 
 volumes:
