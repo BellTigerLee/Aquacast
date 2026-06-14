@@ -61,6 +61,66 @@ def test_wide_insert_merges_sensor_messages_and_keeps_new_metrics(tmp_path):
     assert dashboard_row["turbidity"] == 2.5
 
 
+def test_wide_insert_stores_actuator_state(tmp_path):
+    db_path = tmp_path / "aquacast.db"
+    db.init_db(db_path)
+    event_time_ms = 1717245296789
+    reading = {
+        **_reading("mixed_tank_outlet"),
+        "inflow_enabled": False,
+        "inlet_enabled": False,
+        "outlet_enabled": False,
+        "biofilter_on": True,
+        "mechanical_filter_on": False,
+        "heater_on": False,
+        "flow_lph": 1800.0,
+        "q_makeup_lph": 1800.0,
+        "heater_power_w": 0.0,
+        "turbidity_settle_h": 0.0,
+        "tank_path": "/World/Fishtank_2/Water",
+    }
+    message = kp.build_message(reading, tank_id="tank-01", event_time_ms=event_time_ms, seq=1)
+
+    with sqlite3.connect(db_path) as conn:
+        db.insert_kafka_message(conn, message, topic="aquacast.water_quality")
+        conn.commit()
+
+    rows = db.query_recent_wide(db_path, hours=1.0, now_ms=event_time_ms + 1000)
+    assert rows[0]["inflow_enabled"] == 0
+    assert rows[0]["biofilter_on"] == 1
+    assert rows[0]["mechanical_filter_on"] == 0
+    assert rows[0]["flow_lph"] == 1800.0
+    assert rows[0]["tank_path"] == "/World/Fishtank_2/Water"
+
+    dashboard_row = db.dashboard_rows_from_wide(rows)[0]
+    assert dashboard_row["tank_path"] == "/World/Fishtank_2/Water"
+    assert dashboard_row["inflow_enabled"] is False
+    assert dashboard_row["biofilter_on"] is True
+    assert dashboard_row["mechanical_filter_on"] is False
+
+
+def test_query_recent_wide_limits_to_newest_rows_then_returns_chronological(tmp_path):
+    db_path = tmp_path / "aquacast.db"
+    db.init_db(db_path)
+    base_ms = 1717245296000
+
+    with sqlite3.connect(db_path) as conn:
+        for index in range(3):
+            event_time_ms = base_ms + index * 1000
+            message = kp.build_message(
+                {**_reading("mixed_tank_outlet"), "dissolved_oxygen_mg_l": 8.0 + index},
+                tank_id="tank-01",
+                event_time_ms=event_time_ms,
+                seq=index + 1,
+            )
+            db.insert_kafka_message(conn, message, topic="aquacast.water_quality")
+        conn.commit()
+
+    rows = db.query_recent_wide(db_path, hours=1.0, limit=2, now_ms=base_ms + 10_000)
+    assert [row["event_time_ms"] for row in rows] == [base_ms + 1000, base_ms + 2000]
+    assert [row["dissolved_oxygen_mg_l"] for row in rows] == [9.0, 10.0]
+
+
 def test_init_db_migrates_missing_salinity_and_turbidity_columns(tmp_path):
     db_path = tmp_path / "legacy.db"
     with sqlite3.connect(db_path) as conn:
@@ -89,6 +149,9 @@ def test_init_db_migrates_missing_salinity_and_turbidity_columns(tmp_path):
     assert "nh3_mg_l" in columns
     assert "salinity_ppt" in columns
     assert "turbidity_ntu" in columns
+    assert "inflow_enabled" in columns
+    assert "biofilter_on" in columns
+    assert "mechanical_filter_on" in columns
 
 
 def test_threshold_alert_insert_and_context_payload(tmp_path):
