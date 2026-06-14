@@ -1,4 +1,4 @@
-"""Local LM Studio panel integrated into the Aquacast Composer extension."""
+"""Local OpenAI-compatible LLM panel integrated into Aquacast."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import time
 import omni.ui as ui
 
 from .lm_studio_client import LMStudioClient
+from .local_rag import build_rag_context
 
 
 class LocalLLMPanel:
@@ -29,7 +30,10 @@ class LocalLLMPanel:
             self._build_window()
         else:
             self._window.visible = True
-        self._append_message_once("System", "Local LLM Panel ready. Start LM Studio, then click Run Once or Start.")
+        self._append_message_once(
+            "System",
+            "Local LLM Panel ready. It can use Ollama through http://127.0.0.1:1234 and local RAG context.",
+        )
 
     def shutdown(self):
         self._stop_polling()
@@ -49,17 +53,17 @@ class LocalLLMPanel:
         self._interval_model = ui.SimpleIntModel(int(self._config("LM_STUDIO_POLL_INTERVAL_SECONDS", 60)))
         self._prompt_model = ui.SimpleStringModel(
             self._config(
-                "LM_STUDIO_DEFAULT_PROMPT",
-                "You are connected to Aquacast. Give a concise status-style response.",
+                "LOCAL_LLM_DEFAULT_PROMPT",
+                self._config("LM_STUDIO_DEFAULT_PROMPT", "You are connected to Aquacast. Give a concise status-style response."),
             )
         )
 
         self._window = ui.Window("Aquacast Local LLM Panel", width=540, height=720, visible=True)
         with self._window.frame:
             with ui.VStack(spacing=8, height=0):
-                ui.Label("LM Studio Local LLM Connector", height=24)
+                ui.Label("Local LLM Connector", height=24)
                 with ui.VStack(spacing=4):
-                    ui.Label("LM Studio Server URL")
+                    ui.Label("Server URL. Ollama is exposed here for native and OpenAI-compatible APIs.")
                     ui.StringField(self._server_url_model)
                     ui.Label("Model name. Leave empty to auto-detect first loaded model.")
                     ui.StringField(self._model_name_model)
@@ -75,7 +79,7 @@ class LocalLLMPanel:
                     ui.Button("Clear", clicked_fn=self._clear_messages)
 
                 ui.Separator()
-                ui.Label("Responses", height=22)
+                ui.Label("Response Log", height=22)
                 with ui.ScrollingFrame(height=0):
                     self._message_stack = ui.VStack(spacing=6)
 
@@ -86,7 +90,7 @@ class LocalLLMPanel:
             self._append_message("System", "Polling is already running.")
             return
         self._running = True
-        self._append_message("System", "Started polling LM Studio.")
+        self._append_message("System", "Started polling local LLM.")
         self._task = asyncio.ensure_future(self._poll_loop())
 
     def _stop_polling(self):
@@ -119,29 +123,53 @@ class LocalLLMPanel:
 
     async def _run_once(self):
         prompt = self._prompt_model.as_string if self._prompt_model is not None else ""
-        self._append_message("Prompt", prompt)
+        server_url = self._server_url_model.as_string if self._server_url_model is not None else "http://127.0.0.1:1234"
+        self._append_message("API 요청", f"요청 URL: {server_url}\n프롬프트: {prompt}")
         try:
             response_text = await asyncio.to_thread(self._call_lm_studio, prompt)
-            self._append_message("LLM", response_text)
+            self._append_message("API 응답", f"요청 URL: {server_url}\n답변: {response_text}")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._append_message("Error", str(exc))
+            self._append_message("API연결 실패", f"요청 URL: {server_url}\n오류: {exc}")
 
     def _call_lm_studio(self, prompt: str) -> str:
         client = LMStudioClient(
             self._server_url_model.as_string if self._server_url_model is not None else "http://127.0.0.1:1234",
-            model_name=self._model_name_model.as_string if self._model_name_model is not None else "",
-            timeout_s=float(self._config("LM_STUDIO_TIMEOUT_SECONDS", 120.0)),
+            model_name=self._model_name_model.as_string if self._model_name_model is not None else self._config("LOCAL_LLM_MODEL_NAME", ""),
+            timeout_s=float(self._config("LOCAL_LLM_TIMEOUT_SECONDS", self._config("LM_STUDIO_TIMEOUT_SECONDS", 120.0))),
+            ollama_native=str(self._config("LOCAL_LLM_PROVIDER", "ollama")).strip().lower() == "ollama",
+            keep_alive=str(self._config("LOCAL_LLM_KEEP_ALIVE", "1h")),
+            num_ctx=int(self._config("LOCAL_LLM_NUM_CTX", 4096) or 4096),
         )
+        prompt = self._prompt_with_rag(prompt)
         return client.chat(
             prompt,
             system_prompt=self._config(
-                "LM_STUDIO_SYSTEM_PROMPT",
-                "You are a concise assistant running locally through LM Studio for Aquacast.",
+                "LOCAL_LLM_SYSTEM_PROMPT",
+                self._config(
+                    "LM_STUDIO_SYSTEM_PROMPT",
+                    "You are a concise Aquacast aquaculture assistant. Use provided RAG context when relevant.",
+                ),
             ),
-            temperature=float(self._config("LM_STUDIO_TEMPERATURE", 0.7)),
-            max_tokens=int(self._config("LM_STUDIO_MAX_TOKENS", 256)),
+            temperature=float(self._config("LOCAL_LLM_TEMPERATURE", self._config("LM_STUDIO_TEMPERATURE", 0.7))),
+            max_tokens=int(self._config("LOCAL_LLM_MAX_TOKENS", self._config("LM_STUDIO_MAX_TOKENS", 256))),
+        )
+
+    def _prompt_with_rag(self, prompt: str) -> str:
+        if not self._truthy(self._config("ENABLE_LOCAL_LLM_RAG", True)):
+            return prompt
+        context = build_rag_context(
+            prompt,
+            manuals_path=self._config("LOCAL_LLM_RAG_MANUALS_PATH", "~/cs-project/CSproject_Aqua/rag/manuals/documents.txt"),
+            top_k=int(self._config("LOCAL_LLM_RAG_TOP_K", 3) or 3),
+            max_chars=int(self._config("LOCAL_LLM_RAG_MAX_CHARS", 3500) or 3500),
+        )
+        return (
+            f"{prompt}\n\n"
+            "Use the following local RAG context if it is relevant. "
+            "If the context is insufficient, say what is missing instead of inventing data.\n\n"
+            f"{context}"
         )
 
     def _append_message_once(self, role: str, text: str):
@@ -150,9 +178,11 @@ class LocalLLMPanel:
         self._append_message(role, text)
 
     def _append_message(self, role: str, text: str):
-        timestamp = time.strftime("%H:%M:%S")
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         self._messages.append((timestamp, str(role), str(text)))
-        self._messages = self._messages[-100:]
+        log_limit = int(self._config("LOCAL_LLM_RESPONSE_LOG_LIMIT", 0) or 0)
+        if log_limit > 0:
+            self._messages = self._messages[-log_limit:]
         self._rebuild_messages()
 
     def _rebuild_messages(self):
@@ -184,3 +214,7 @@ class LocalLLMPanel:
             return int(model.get_value_as_int())
         except Exception:
             return int(default)
+
+    @staticmethod
+    def _truthy(value) -> bool:
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}

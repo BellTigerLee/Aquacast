@@ -278,17 +278,26 @@ WQ_METRICS_DASHBOARD_METRICS = [
 ]
 WQ_METRIC_DASHBOARD_THRESHOLDS = WQ_METRIC_BAND_THRESHOLDS
 
-# Local LM Studio UI panel integrated into the Aquacast extension.
+# Local LLM UI panel integrated into the Aquacast extension.
+# Ollama is exposed on 1234 by docker-compose.ollama.yml.
 ENABLE_LOCAL_LLM_PANEL = True
 LOCAL_LLM_PANEL_OPEN_ON_STARTUP = False
 LM_STUDIO_SERVER_URL = "http://127.0.0.1:1234"
-LM_STUDIO_MODEL_NAME = ""
+LM_STUDIO_MODEL_NAME = "gemma4"
 LM_STUDIO_POLL_INTERVAL_SECONDS = 60
 LM_STUDIO_TIMEOUT_SECONDS = 120.0
 LM_STUDIO_TEMPERATURE = 0.7
 LM_STUDIO_MAX_TOKENS = 256
-LM_STUDIO_SYSTEM_PROMPT = "You are a concise assistant running locally through LM Studio for Aquacast."
+LM_STUDIO_SYSTEM_PROMPT = "You are a concise Aquacast aquaculture assistant. Use provided RAG context when relevant."
 LM_STUDIO_DEFAULT_PROMPT = "You are connected to Aquacast. Give a concise status-style response."
+LOCAL_LLM_PROVIDER = "ollama"
+LOCAL_LLM_KEEP_ALIVE = "1h"
+LOCAL_LLM_NUM_CTX = 4096
+ENABLE_LOCAL_LLM_RAG = True
+LOCAL_LLM_RAG_MANUALS_PATH = "~/cs-project/CSproject_Aqua/rag/manuals/documents.txt"
+LOCAL_LLM_RAG_TOP_K = 3
+LOCAL_LLM_RAG_MAX_CHARS = 3500
+LOCAL_LLM_RESPONSE_LOG_LIMIT = 0  # 0 keeps the panel response log unbounded for the session.
 
 # Practical operating thresholds for salmon/RAS-style water-quality views.
 # Units match snapshot/sensor keys: degC, mg/L, pH, mg/L as CaCO3, ppt, NTU.
