@@ -297,6 +297,11 @@ ENABLE_LOCAL_LLM_RAG = True
 LOCAL_LLM_RAG_MANUALS_PATH = "~/cs-project/CSproject_Aqua/rag/manuals/documents.txt"
 LOCAL_LLM_RAG_TOP_K = 3
 LOCAL_LLM_RAG_MAX_CHARS = 3500
+LOCAL_LLM_INCLUDE_WQ_DB_CONTEXT = True
+LOCAL_LLM_WQ_CONTEXT_HOURS = 4.0
+LOCAL_LLM_WQ_CONTEXT_LIMIT = 7200
+LOCAL_LLM_WQ_CONTEXT_ALERT_LIMIT = 200
+LOCAL_LLM_WQ_CONTEXT_MAX_CHARS = 5000
 LOCAL_LLM_RESPONSE_LOG_LIMIT = 0  # 0 keeps the panel response log unbounded for the session.
 
 # Practical operating thresholds for salmon/RAS-style water-quality views.

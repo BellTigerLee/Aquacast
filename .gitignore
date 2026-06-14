@@ -5,3 +5,7 @@ __pycache__/
 *.py[cod]
 stage_topology.json
 *.csv
+backend/data/sqlite/
+*.db
+*.db-shm
+*.db-wal

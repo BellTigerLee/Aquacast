@@ -36,6 +36,9 @@ Or:
 docker compose -f backend/docker-compose.yml up --build
 ```
 
+The compose stack stores SQLite data in `backend/data/sqlite/aquacast.db` so the
+dashboard project can mount the same DB and read recent water-quality history.
+
 Make targets are also available:
 
 ```bash
@@ -48,6 +51,10 @@ make smoke
 ## API
 
 - `GET /health`
+- `GET /thresholds`
+- `GET /history?hours=4&limit=7200`
+- `GET /threshold-alerts?hours=4&limit=200`
+- `GET /llm-context?hours=4&limit=7200&alert_limit=200`
 - `GET /snapshot`
 - `GET /sensor?name=mixed_tank_outlet`
 - `GET /sensors`

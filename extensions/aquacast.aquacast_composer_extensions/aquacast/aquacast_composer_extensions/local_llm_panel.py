@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from urllib.parse import urlencode
+import urllib.request
 
 import carb
+import omni.kit.app
 import omni.ui as ui
 
 from .lm_studio_client import LMStudioClient
@@ -19,11 +23,8 @@ class LocalLLMPanel:
         self._window = None
         self._running = False
         self._task = None
+        self._rebuild_task = None
         self._messages = []
-        self._message_stack = None
-        self._log_label = None
-        self._latest_status_label = None
-        self._log_text_model = None
         self._server_url_model = None
         self._model_name_model = None
         self._interval_model = None
@@ -41,32 +42,42 @@ class LocalLLMPanel:
 
     def shutdown(self):
         self._stop_polling()
+        if self._rebuild_task is not None:
+            try:
+                self._rebuild_task.cancel()
+            except Exception:
+                pass
+            self._rebuild_task = None
         if self._window is not None:
             try:
                 self._window.destroy()
             except Exception:
                 pass
             self._window = None
-        self._message_stack = None
-        self._log_label = None
-        self._latest_status_label = None
-        self._log_text_model = None
 
     def _build_window(self):
-        self._server_url_model = ui.SimpleStringModel(
-            self._config("LM_STUDIO_SERVER_URL", "http://127.0.0.1:1234")
-        )
-        self._model_name_model = ui.SimpleStringModel(self._config("LM_STUDIO_MODEL_NAME", ""))
-        self._interval_model = ui.SimpleIntModel(int(self._config("LM_STUDIO_POLL_INTERVAL_SECONDS", 60)))
-        self._prompt_model = ui.SimpleStringModel(
-            self._config(
-                "LOCAL_LLM_DEFAULT_PROMPT",
-                self._config("LM_STUDIO_DEFAULT_PROMPT", "You are connected to Aquacast. Give a concise status-style response."),
+        if self._server_url_model is None:
+            self._server_url_model = ui.SimpleStringModel(
+                self._config("LM_STUDIO_SERVER_URL", "http://127.0.0.1:1234")
             )
-        )
-        self._log_text_model = ui.SimpleStringModel("")
+        if self._model_name_model is None:
+            self._model_name_model = ui.SimpleStringModel(self._config("LM_STUDIO_MODEL_NAME", ""))
+        if self._interval_model is None:
+            self._interval_model = ui.SimpleIntModel(int(self._config("LM_STUDIO_POLL_INTERVAL_SECONDS", 60)))
+        if self._prompt_model is None:
+            self._prompt_model = ui.SimpleStringModel(
+                self._config(
+                    "LOCAL_LLM_DEFAULT_PROMPT",
+                    self._config("LM_STUDIO_DEFAULT_PROMPT", "You are connected to Aquacast. Give a concise status-style response."),
+                )
+            )
 
         self._window = ui.Window("Aquacast Local LLM Panel", width=540, height=720, visible=True)
+        self._build_window_contents()
+
+    def _build_window_contents(self):
+        if self._window is None:
+            return
         with self._window.frame:
             with ui.VStack(spacing=8, height=0):
                 ui.Label("Local LLM Connector", height=24)
@@ -87,13 +98,16 @@ class LocalLLMPanel:
                     ui.Button("Clear", clicked_fn=self._clear_messages)
 
                 ui.Separator()
-                ui.Label("Latest", height=22)
-                self._latest_status_label = ui.Label("No local LLM requests yet.", word_wrap=True, height=76)
-                ui.Label("Response Log", height=22)
-                with ui.ScrollingFrame(height=0):
-                    self._log_label = ui.Label("", word_wrap=True, height=4000)
-
-        self._rebuild_messages()
+                ui.Label("Latest Log", height=22)
+                ui.Label(self._latest_log_text(), word_wrap=True, height=120)
+                ui.Separator()
+                ui.Label("Omniverse Console", height=22)
+                ui.Label(
+                    "Full Local LLM request/response history is written to the Omniverse Console. "
+                    "Open Window > Utilities > Console and filter for [Aquacast Local LLM].",
+                    word_wrap=True,
+                    height=54,
+                )
 
     def _start_polling(self):
         if self._running:
@@ -121,7 +135,7 @@ class LocalLLMPanel:
 
     def _clear_messages(self):
         self._messages.clear()
-        self._rebuild_messages()
+        self._request_ui_rebuild()
 
     async def _poll_loop(self):
         try:
@@ -195,20 +209,49 @@ class LocalLLMPanel:
         )
 
     def _prompt_with_rag(self, prompt: str) -> str:
+        context_parts = []
+        if self._truthy(self._config("LOCAL_LLM_INCLUDE_WQ_DB_CONTEXT", True)):
+            context_parts.append(self._water_quality_db_context())
         if not self._truthy(self._config("ENABLE_LOCAL_LLM_RAG", True)):
-            return prompt
-        context = build_rag_context(
-            prompt,
-            manuals_path=self._config("LOCAL_LLM_RAG_MANUALS_PATH", "~/cs-project/CSproject_Aqua/rag/manuals/documents.txt"),
-            top_k=int(self._config("LOCAL_LLM_RAG_TOP_K", 3) or 3),
-            max_chars=int(self._config("LOCAL_LLM_RAG_MAX_CHARS", 3500) or 3500),
+            context = "\n\n".join(part for part in context_parts if part)
+            return f"{prompt}\n\n{context}" if context else prompt
+        context_parts.append(
+            build_rag_context(
+                prompt,
+                manuals_path=self._config("LOCAL_LLM_RAG_MANUALS_PATH", "~/cs-project/CSproject_Aqua/rag/manuals/documents.txt"),
+                top_k=int(self._config("LOCAL_LLM_RAG_TOP_K", 3) or 3),
+                max_chars=int(self._config("LOCAL_LLM_RAG_MAX_CHARS", 3500) or 3500),
+            )
         )
+        context = "\n\n".join(part for part in context_parts if part)
         return (
             f"{prompt}\n\n"
-            "Use the following local RAG context if it is relevant. "
+            "Use the following local SQLite/RAG context if it is relevant. "
             "If the context is insufficient, say what is missing instead of inventing data.\n\n"
             f"{context}"
         )
+
+    def _water_quality_db_context(self) -> str:
+        backend_url = str(self._config("WQ_BACKEND_URL", "http://127.0.0.1:8765")).rstrip("/")
+        params = urlencode(
+            {
+                "hours": float(self._config("LOCAL_LLM_WQ_CONTEXT_HOURS", 4.0) or 4.0),
+                "limit": int(self._config("LOCAL_LLM_WQ_CONTEXT_LIMIT", 7200) or 7200),
+                "alert_limit": int(self._config("LOCAL_LLM_WQ_CONTEXT_ALERT_LIMIT", 200) or 200),
+            }
+        )
+        url = f"{backend_url}/llm-context?{params}"
+        max_chars = int(self._config("LOCAL_LLM_WQ_CONTEXT_MAX_CHARS", 5000) or 5000)
+        try:
+            request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+            with urllib.request.urlopen(request, timeout=5.0) as response:
+                payload = json.loads(response.read().decode("utf-8") or "{}")
+            text = str(payload.get("context_text") or payload)
+            if len(text) > max_chars:
+                text = text[:max_chars].rsplit(" ", 1)[0].strip()
+            return text
+        except Exception as exc:
+            return f"[Aquacast SQLite water-quality context unavailable: {exc}]"
 
     def _append_message_once(self, role: str, text: str):
         if any(existing_role == role and existing_text == text for _ts, existing_role, existing_text in self._messages):
@@ -217,35 +260,48 @@ class LocalLLMPanel:
 
     def _append_message(self, role: str, text: str):
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        self._messages.append((timestamp, str(role), str(text)))
+        entry = (timestamp, str(role), str(text))
+        self._messages.append(entry)
         log_limit = int(self._config("LOCAL_LLM_RESPONSE_LOG_LIMIT", 0) or 0)
         if log_limit > 0:
             self._messages = self._messages[-log_limit:]
-        carb.log_info(f"[Aquacast Local LLM] [{timestamp}] {role}: {str(text).replace(chr(10), ' | ')}")
-        self._rebuild_messages()
+        self._log_to_omniverse_console(timestamp, role, text)
+        self._request_ui_rebuild()
 
-    def _rebuild_messages(self):
-        if self._log_text_model is None:
+    @staticmethod
+    def _log_to_omniverse_console(timestamp: str, role: str, text: str):
+        message = f"[Aquacast Local LLM] [{timestamp}] {role}: {str(text).replace(chr(10), ' | ')}"
+        if role == "API연결 실패":
+            carb.log_error(message)
+        else:
+            # The built-in Console window hides Info by default, but shows Warning/Error.
+            carb.log_warn(message)
+
+    def _request_ui_rebuild(self):
+        if self._window is None or self._rebuild_task is not None:
             return
-        lines = []
-        for timestamp, role, text in self._messages:
-            lines.append(f"[{timestamp}] {role}\n{text}")
-        log_text = "\n\n---\n\n".join(lines)
-        latest_text = lines[-1] if lines else "No local LLM requests yet."
-        if self._latest_status_label is not None:
-            try:
-                self._latest_status_label.text = latest_text
-            except Exception as exc:
-                carb.log_warn(f"[Aquacast Local LLM] Failed to update latest label: {exc}")
         try:
-            self._log_text_model.set_value(log_text)
+            self._rebuild_task = asyncio.ensure_future(self._rebuild_on_next_update())
         except Exception as exc:
-            carb.log_warn(f"[Aquacast Local LLM] Failed to update log model: {exc}")
-        if self._log_label is not None:
+            self._rebuild_task = None
+            carb.log_warn(f"[Aquacast Local LLM] Failed to schedule UI rebuild: {exc}")
+            self._build_window_contents()
+
+    async def _rebuild_on_next_update(self):
+        try:
             try:
-                self._log_label.text = log_text
-            except Exception as exc:
-                carb.log_warn(f"[Aquacast Local LLM] Failed to update log label: {exc}")
+                await omni.kit.app.get_app().next_update_async()
+            except Exception:
+                pass
+            self._build_window_contents()
+        finally:
+            self._rebuild_task = None
+
+    def _latest_log_text(self) -> str:
+        if not self._messages:
+            return "No local LLM logs yet."
+        timestamp, role, text = self._messages[-1]
+        return f"[{timestamp}] {role}\n{text}"
 
     def _config(self, name: str, default=None):
         return self._config_getter(name, default)
