@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+import carb
 import omni.ui as ui
 
 from .lm_studio_client import LMStudioClient
@@ -20,6 +21,9 @@ class LocalLLMPanel:
         self._task = None
         self._messages = []
         self._message_stack = None
+        self._log_label = None
+        self._latest_status_label = None
+        self._log_text_model = None
         self._server_url_model = None
         self._model_name_model = None
         self._interval_model = None
@@ -44,6 +48,9 @@ class LocalLLMPanel:
                 pass
             self._window = None
         self._message_stack = None
+        self._log_label = None
+        self._latest_status_label = None
+        self._log_text_model = None
 
     def _build_window(self):
         self._server_url_model = ui.SimpleStringModel(
@@ -57,6 +64,7 @@ class LocalLLMPanel:
                 self._config("LM_STUDIO_DEFAULT_PROMPT", "You are connected to Aquacast. Give a concise status-style response."),
             )
         )
+        self._log_text_model = ui.SimpleStringModel("")
 
         self._window = ui.Window("Aquacast Local LLM Panel", width=540, height=720, visible=True)
         with self._window.frame:
@@ -79,9 +87,11 @@ class LocalLLMPanel:
                     ui.Button("Clear", clicked_fn=self._clear_messages)
 
                 ui.Separator()
+                ui.Label("Latest", height=22)
+                self._latest_status_label = ui.Label("No local LLM requests yet.", word_wrap=True, height=76)
                 ui.Label("Response Log", height=22)
                 with ui.ScrollingFrame(height=0):
-                    self._message_stack = ui.VStack(spacing=6)
+                    self._log_label = ui.Label("", word_wrap=True, height=4000)
 
         self._rebuild_messages()
 
@@ -91,7 +101,9 @@ class LocalLLMPanel:
             return
         self._running = True
         self._append_message("System", "Started polling local LLM.")
-        self._task = asyncio.ensure_future(self._poll_loop())
+        self._task = self._schedule_task(self._poll_loop())
+        if self._task is None:
+            self._running = False
 
     def _stop_polling(self):
         self._running = False
@@ -105,7 +117,7 @@ class LocalLLMPanel:
             self._append_message("System", "Stopped polling.")
 
     def _run_once_clicked(self):
-        asyncio.ensure_future(self._run_once())
+        self._schedule_task(self._run_once())
 
     def _clear_messages(self):
         self._messages.clear()
@@ -122,8 +134,8 @@ class LocalLLMPanel:
             self._running = False
 
     async def _run_once(self):
-        prompt = self._prompt_model.as_string if self._prompt_model is not None else ""
-        server_url = self._server_url_model.as_string if self._server_url_model is not None else "http://127.0.0.1:1234"
+        prompt = self._model_string(self._prompt_model, "")
+        server_url = self._model_string(self._server_url_model, "http://127.0.0.1:1234")
         self._append_message("API 요청", f"요청 URL: {server_url}\n프롬프트: {prompt}")
         try:
             response_text = await asyncio.to_thread(self._call_lm_studio, prompt)
@@ -133,10 +145,36 @@ class LocalLLMPanel:
         except Exception as exc:
             self._append_message("API연결 실패", f"요청 URL: {server_url}\n오류: {exc}")
 
+    def _schedule_task(self, coro):
+        try:
+            task = asyncio.ensure_future(coro)
+        except Exception as exc:
+            try:
+                coro.close()
+            except Exception:
+                pass
+            self._append_message("API연결 실패", f"오류: {exc}")
+            return None
+        try:
+            task.add_done_callback(self._on_task_done)
+        except Exception:
+            pass
+        return task
+
+    def _on_task_done(self, task):
+        try:
+            if task.cancelled():
+                return
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            self._append_message("API연결 실패", f"오류: {exc}")
+
     def _call_lm_studio(self, prompt: str) -> str:
         client = LMStudioClient(
-            self._server_url_model.as_string if self._server_url_model is not None else "http://127.0.0.1:1234",
-            model_name=self._model_name_model.as_string if self._model_name_model is not None else self._config("LOCAL_LLM_MODEL_NAME", ""),
+            self._model_string(self._server_url_model, "http://127.0.0.1:1234"),
+            model_name=self._model_string(self._model_name_model, self._config("LOCAL_LLM_MODEL_NAME", "")),
             timeout_s=float(self._config("LOCAL_LLM_TIMEOUT_SECONDS", self._config("LM_STUDIO_TIMEOUT_SECONDS", 120.0))),
             ollama_native=str(self._config("LOCAL_LLM_PROVIDER", "ollama")).strip().lower() == "ollama",
             keep_alive=str(self._config("LOCAL_LLM_KEEP_ALIVE", "1h")),
@@ -183,21 +221,31 @@ class LocalLLMPanel:
         log_limit = int(self._config("LOCAL_LLM_RESPONSE_LOG_LIMIT", 0) or 0)
         if log_limit > 0:
             self._messages = self._messages[-log_limit:]
+        carb.log_info(f"[Aquacast Local LLM] [{timestamp}] {role}: {str(text).replace(chr(10), ' | ')}")
         self._rebuild_messages()
 
     def _rebuild_messages(self):
-        if self._message_stack is None:
+        if self._log_text_model is None:
             return
+        lines = []
+        for timestamp, role, text in self._messages:
+            lines.append(f"[{timestamp}] {role}\n{text}")
+        log_text = "\n\n---\n\n".join(lines)
+        latest_text = lines[-1] if lines else "No local LLM requests yet."
+        if self._latest_status_label is not None:
+            try:
+                self._latest_status_label.text = latest_text
+            except Exception as exc:
+                carb.log_warn(f"[Aquacast Local LLM] Failed to update latest label: {exc}")
         try:
-            self._message_stack.clear()
-        except Exception:
-            return
-        with self._message_stack:
-            for timestamp, role, text in self._messages:
-                with ui.VStack(spacing=2):
-                    ui.Label(f"[{timestamp}] {role}", height=20)
-                    ui.Label(text, word_wrap=True, height=0)
-                    ui.Separator()
+            self._log_text_model.set_value(log_text)
+        except Exception as exc:
+            carb.log_warn(f"[Aquacast Local LLM] Failed to update log model: {exc}")
+        if self._log_label is not None:
+            try:
+                self._log_label.text = log_text
+            except Exception as exc:
+                carb.log_warn(f"[Aquacast Local LLM] Failed to update log label: {exc}")
 
     def _config(self, name: str, default=None):
         return self._config_getter(name, default)
@@ -214,6 +262,22 @@ class LocalLLMPanel:
             return int(model.get_value_as_int())
         except Exception:
             return int(default)
+
+    @staticmethod
+    def _model_string(model, default: str = "") -> str:
+        if model is None:
+            return str(default)
+        try:
+            value = model.as_string
+            if callable(value):
+                value = value()
+            return str(value)
+        except Exception:
+            pass
+        try:
+            return str(model.get_value_as_string())
+        except Exception:
+            return str(default)
 
     @staticmethod
     def _truthy(value) -> bool:
