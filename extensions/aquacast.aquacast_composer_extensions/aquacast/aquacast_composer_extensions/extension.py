@@ -1272,6 +1272,7 @@ class CreateSetupExtension(omni.ext.IExt):
                         ui.Button("Overfeed", clicked_fn=lambda: self._control_action("load_scenario", name="overfeed"))
                         ui.Button("Pump Off", clicked_fn=lambda: self._control_action("load_scenario", name="pump_off"))
                         ui.Button("Biofilter Off", clicked_fn=lambda: self._control_action("load_scenario", name="biofilter_off"))
+                    self._sync_control_fields_from_current_snapshot()
 
     def _control_float_row(self, key, label, default, button_label, clicked_fn):
         with ui.HStack(height=26, spacing=6):
@@ -1321,6 +1322,7 @@ class CreateSetupExtension(omni.ext.IExt):
             return
         status = result.get("status", "unknown") if isinstance(result, dict) else "unknown"
         if status == "ok":
+            self._sync_control_fields_from_result(action, result)
             detail = f"{action} applied"
             if tank:
                 detail += f" -> {self._sensor_tank_label(tank)}"
@@ -1346,6 +1348,48 @@ class CreateSetupExtension(omni.ext.IExt):
         else:
             error = result.get("error", status) if isinstance(result, dict) else status
             self._set_control_status(f"{action} failed: {error}")
+
+    def _sync_control_fields_from_current_snapshot(self):
+        if self._aquacast_main is None or not hasattr(self._aquacast_main, "get_quality_snapshot"):
+            return
+        tank = self._selected_control_tank()
+        try:
+            snapshot = self._aquacast_main.get_quality_snapshot(tank_path=tank)
+        except Exception as exc:
+            carb.log_warn(f"[test-Aquacast] Control snapshot sync failed: {exc}")
+            return
+        if isinstance(snapshot, dict) and snapshot.get("status") == "ok":
+            self._sync_control_fields_from_snapshot(snapshot)
+
+    def _sync_control_fields_from_result(self, action, result):
+        if not isinstance(result, dict):
+            return
+        values = result.get("control_values")
+        if isinstance(values, dict) and values:
+            self._sync_control_fields_from_snapshot(values)
+            return
+        self._sync_control_fields_from_snapshot(result)
+        if action == "set_inlet_temperature" and "temperature_c" in result:
+            self._set_control_float("inlet_temp_c", result.get("temperature_c"))
+
+    def _sync_control_fields_from_snapshot(self, snapshot):
+        if not isinstance(snapshot, dict):
+            return
+        mapping = {
+            "temperature_c": "temperature_c",
+            "heater_w": "heater_power_w",
+            "inlet_temp_c": "inlet_temp_c",
+            "fish_count": "fish_count",
+            "fish_weight_kg": "fish_weight_kg",
+            "flow_lph": "flow_lph",
+            "salinity_ppt": "salinity_in_ppt",
+            "turbidity_ntu": "turbidity_in_ntu",
+            "inlet_do": "do_in",
+            "inlet_alk": "alk_in",
+        }
+        for field_key, snapshot_key in mapping.items():
+            if snapshot_key in snapshot:
+                self._set_control_float(field_key, snapshot.get(snapshot_key))
 
     def _set_control_status(self, text):
         if self._control_status_label is not None:

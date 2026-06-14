@@ -3648,6 +3648,41 @@ class WaterTempController:
 class WaterQualityController:
     """Drive water-quality state and expose sensor/particle scalar fields."""
 
+    _CONTROL_VALUE_KEYS = (
+        "temperature_c",
+        "heater_power_w",
+        "inlet_temp_c",
+        "flow_lph",
+        "q_makeup_lph",
+        "inflow_enabled",
+        "biofilter_on",
+        "turbidity_settle_h",
+        "fish_count",
+        "fish_weight_kg",
+        "do_in",
+        "tan_in_mg_l",
+        "alk_in",
+        "salinity_in_ppt",
+        "turbidity_in_ntu",
+        "kla_o2_h",
+        "kla_co2_h",
+        "k_nitrif_h",
+        "vtr_max_mg_l_h",
+        "dissolved_oxygen_mg_l",
+        "tan_mg_l",
+        "co2_mg_l",
+        "alkalinity_mg_l_as_caco3",
+        "salinity_ppt",
+        "turbidity_ntu",
+        "feed_pool_kg",
+    )
+
+    _CONTROL_VALUE_ALIASES = {
+        "heater_w": "heater_power_w",
+        "inlet_do": "do_in",
+        "inlet_alk": "alk_in",
+    }
+
     _PARTICLE_PRIMVAR_NAMES = {
         "temperature": "temperature",
         "dissolved_oxygen": "dissolved_oxygen",
@@ -3892,24 +3927,97 @@ class WaterQualityController:
         kind = str(action.get("type", action.get("action", ""))).strip().lower()
         if not kind:
             return {"status": "error", "error": "missing action type"}
+        before = {}
         try:
             tank_path = action.get("tank_path")
             model = self._model_for_tank(tank_path, create=bool(tank_path))
+            try:
+                before = self._snapshot_from_model(model, tank_path=tank_path)
+            except Exception as exc:
+                carb.log_warn(f"[Aquacast WQ Control] Failed to read pre-action snapshot action={kind}: {exc}")
             if hasattr(model, "apply_control"):
                 result = model.apply_control(action)
             else:
                 result = {"status": "error", "error": "model does not support control actions"}
         except Exception as exc:
+            carb.log_warn(f"[Aquacast WQ Control] action={kind} failed request={self._format_control_request(action)} error={exc}")
             return {"status": "error", "error": str(exc), "action": kind}
 
-        self._sync_control_action_to_temperature_controller(kind, action, result)
-        self._refresh_visuals_after_control_action(kind, action.get("tank_path"))
         result = dict(result or {})
         result.setdefault("status", "ok")
         result["action"] = kind
         if action.get("tank_path") is not None:
             result["tank_path"] = str(action.get("tank_path"))
+        result.setdefault("control_values", self._control_values_from_snapshot(result))
+        self._sync_control_action_to_temperature_controller(kind, action, result)
+        self._refresh_visuals_after_control_action(kind, action.get("tank_path"))
+        self._log_control_action(kind, action, before, result)
         return result
+
+    def _control_values_from_snapshot(self, snapshot):
+        if not isinstance(snapshot, dict):
+            return {}
+        values = {key: snapshot[key] for key in self._CONTROL_VALUE_KEYS if key in snapshot}
+        for alias, source in self._CONTROL_VALUE_ALIASES.items():
+            if source in snapshot:
+                values[alias] = snapshot[source]
+        return values
+
+    def _log_control_action(self, kind, action, before, result):
+        if not isinstance(result, dict):
+            return
+        status = str(result.get("status", "unknown"))
+        tank = str(result.get("tank_path") or action.get("tank_path") or "default")
+        if status != "ok":
+            carb.log_warn(
+                f"[Aquacast WQ Control] action={kind} tank={tank} status={status} "
+                f"request={self._format_control_request(action)} error={result.get('error', '')}"
+            )
+            return
+        changes = self._control_changes(before if isinstance(before, dict) else {}, result)
+        change_text = "; ".join(changes) if changes else "no snapshot-visible changes"
+        carb.log_info(
+            f"[Aquacast WQ Control] action={kind} tank={tank} changes={change_text} "
+            f"request={self._format_control_request(action)}"
+        )
+
+    def _control_changes(self, before, after):
+        changes = []
+        for key in self._CONTROL_VALUE_KEYS:
+            if key not in before and key not in after:
+                continue
+            old = before.get(key)
+            new = after.get(key)
+            if not self._control_value_changed(old, new):
+                continue
+            changes.append(f"{key}: {self._format_control_value(old)} -> {self._format_control_value(new)}")
+        return changes
+
+    def _control_value_changed(self, old, new):
+        try:
+            return abs(float(old) - float(new)) > 1e-9
+        except Exception:
+            return old != new
+
+    def _format_control_value(self, value):
+        if value is None:
+            return "None"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        try:
+            return f"{float(value):.4g}"
+        except Exception:
+            return str(value)
+
+    def _format_control_request(self, action):
+        if not isinstance(action, dict):
+            return "{}"
+        parts = []
+        for key in sorted(action):
+            if key in {"type", "action"}:
+                continue
+            parts.append(f"{key}={self._format_control_value(action.get(key))}")
+        return "{" + ", ".join(parts) + "}"
 
     def _sync_control_action_to_temperature_controller(self, kind, action, result):
         controller = globals().get("_water_temp_controller")
