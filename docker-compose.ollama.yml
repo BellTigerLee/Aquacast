@@ -1,0 +1,28 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    environment:
+      # Listen on all interfaces so other machines on the LAN can use http://<host-ip>:11434.
+      OLLAMA_HOST: 0.0.0.0:11434
+    ports:
+      - "${OLLAMA_BIND_ADDRESS:-0.0.0.0}:${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: OLLAMA_HOST=http://127.0.0.1:11434 ollama list
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: pull ${OLLAMA_MODEL:-gemma4:26b}
+    restart: on-failure
+
+volumes:
+  ollama-data:
