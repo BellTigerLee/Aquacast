@@ -34,6 +34,8 @@ from omni.kit.property.usd import PrimPathWidget
 from omni.kit.quicklayout import QuickLayout
 from omni.kit.window.title import get_main_window_title
 
+from .local_llm_panel import LocalLLMPanel
+
 DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve(
     "${aquacast.aquacast_composer_extensions}")
 )
@@ -292,6 +294,8 @@ class CreateSetupExtension(omni.ext.IExt):
         self._metrics_threshold_fields = {}
         self._metrics_history = {}
         self._metrics_thresholds = self._default_metric_thresholds()
+        self._local_llm_panel = None
+        self._local_llm_menu_items = []
         self._fish_window = None
         self._fish_update_sub = None
         self._fish_last_update = 0.0
@@ -440,6 +444,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._create_control_window()
         self._create_actuator_window()
         self._create_metrics_dashboard_window()
+        self._create_local_llm_panel()
         self._create_fish_window()
 
         startup_time = \
@@ -1725,6 +1730,44 @@ class CreateSetupExtension(omni.ext.IExt):
             self._metrics_menu_items = []
 
 
+    def _create_local_llm_panel(self):
+        if not bool(_get_runtime_config("ENABLE_LOCAL_LLM_PANEL", True)):
+            return
+        if self._local_llm_panel is None:
+            self._local_llm_panel = LocalLLMPanel(
+                aquacast_main=self._aquacast_main,
+                config_getter=_get_runtime_config,
+            )
+        self._register_local_llm_panel_menu()
+        if bool(_get_runtime_config("LOCAL_LLM_PANEL_OPEN_ON_STARTUP", False)):
+            self._local_llm_panel.show()
+
+    def _register_local_llm_panel_menu(self):
+        if self._local_llm_menu_items:
+            return
+        self._local_llm_menu_items = [
+            MenuItemDescription(
+                name="Aquacast/Local LLM Panel",
+                onclick_fn=self._show_local_llm_panel,
+            )
+        ]
+        omni.kit.menu.utils.add_menu_items(self._local_llm_menu_items, name="Window")
+
+    def _show_local_llm_panel(self):
+        if self._local_llm_panel is None:
+            self._create_local_llm_panel()
+        if self._local_llm_panel is not None:
+            self._local_llm_panel.show()
+
+    def _teardown_local_llm_panel(self):
+        if self._local_llm_panel is not None:
+            self._local_llm_panel.shutdown()
+            self._local_llm_panel = None
+        if self._local_llm_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._local_llm_menu_items, "Window")
+            self._local_llm_menu_items = []
+
+
     def _create_fish_window(self):
         if not bool(_get_runtime_config("ENABLE_FISH_MANAGEMENT_UI", True)):
             return
@@ -2310,6 +2353,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._control_window = None
         self._actuator_window = None
         self._teardown_metrics_dashboard_window()
+        self._teardown_local_llm_panel()
         self._teardown_fish_window()
         if self._sensor_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._sensor_menu_items, "Window")
@@ -2326,6 +2370,9 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._metrics_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._metrics_menu_items, "Window")
             self._metrics_menu_items = []
+        if self._local_llm_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._local_llm_menu_items, "Window")
+            self._local_llm_menu_items = []
         if self._aquacast_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._aquacast_menu_items, "Aquacast")
             self._aquacast_menu_items = []
