@@ -552,7 +552,7 @@ def _append_payload_json(existing: str | None, message: dict[str, Any]) -> str:
 
 
 def _json_text(value: Any) -> str:
-    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 def _actuator_column_value(key: str, value: Any) -> Any:

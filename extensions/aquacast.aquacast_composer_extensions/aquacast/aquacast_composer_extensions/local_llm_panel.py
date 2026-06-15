@@ -47,9 +47,10 @@ class LocalLLMPanel:
         "load_scenario",
     }
 
-    def __init__(self, *, aquacast_main=None, config_getter=None):
+    def __init__(self, *, aquacast_main=None, config_getter=None, post_confirm_callback=None):
         self._aquacast_main = aquacast_main
         self._config_getter = config_getter or (lambda _name, default=None: default)
+        self._post_confirm_callback = post_confirm_callback
         self._window = None
         self._running = False
         self._task = None
@@ -405,6 +406,18 @@ class LocalLLMPanel:
             self._append_message("Proposal", f"Skipped local sync for {len(skipped)} execution(s): {', '.join(skipped[:5])}")
         if synced == 0 and not skipped:
             self._append_message("Proposal", "Confirm result contained no locally syncable applied actions.")
+        if synced:
+            self._run_post_confirm_callback(synced)
+
+    def _run_post_confirm_callback(self, synced_count: int):
+        callback = self._post_confirm_callback
+        if not callable(callback):
+            return
+        try:
+            callback()
+            self._append_message("Proposal", f"Refreshed Omniverse UI after {int(synced_count)} synchronized action(s).")
+        except Exception as exc:
+            self._append_message("API Error", f"Post-confirm Omniverse refresh failed: {exc}")
 
     def _local_action_payload_from_execution(self, execution: dict) -> dict | None:
         source = execution.get("normalized_payload") or execution.get("request") or execution.get("payload") or {}

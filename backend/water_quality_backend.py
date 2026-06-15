@@ -56,6 +56,7 @@ class WaterQualityBackend:
         self.model = load_model(constants_path, feed_rate_path, scenarios_path, scenario_name)
         self._tank_models: dict[str, Any] = {}
         self._tank_ids: dict[str, str] = {}
+        self._allowed_tank_ids = self._parse_allowed_tank_ids(os.environ.get("AQUACAST_ALLOWED_TANK_IDS", ""))
         self.thresholds_path = Path(
             thresholds_path
             or os.environ.get("AQUACAST_WQ_THRESHOLDS_PATH", str(BACKEND_ROOT / "wq_metric_thresholds.json"))
@@ -76,6 +77,8 @@ class WaterQualityBackend:
 
     def snapshot(self, tank_key: str | None = None) -> dict[str, Any]:
         with self._lock:
+            if not self._tank_allowed(tank_key):
+                return self._blocked_tank_response(tank_key)
             model = self._model_for_tank(tank_key, create=bool(tank_key))
             snap = self._snapshot_for_model(model, tank_key)
             if not tank_key and self._tank_models:
@@ -152,6 +155,8 @@ class WaterQualityBackend:
             if kind == "reset":
                 tank_key = self._tank_key(payload)
                 if tank_key:
+                    if not self._tank_allowed(tank_key):
+                        return self._blocked_tank_response(tank_key, action=kind)
                     model = self._new_model(str(payload.get("scenario_name") or payload.get("name") or self.scenario_name))
                     self._tank_models[tank_key] = model
                     result = self._snapshot_for_model(model, tank_key)
@@ -159,6 +164,8 @@ class WaterQualityBackend:
                     return result
                 return self.reset(str(payload.get("scenario_name") or payload.get("name") or self.scenario_name))
             tank_key = self._tank_key(payload)
+            if not self._tank_allowed(tank_key):
+                return self._blocked_tank_response(tank_key, action=kind)
             model = self._model_for_tank(tank_key, create=bool(tank_key))
             result = model.apply_control(payload)
             if tank_key:
@@ -169,6 +176,8 @@ class WaterQualityBackend:
 
     def sensor(self, sensor_name: str, tank_key: str | None = None) -> dict[str, Any]:
         with self._lock:
+            if not self._tank_allowed(tank_key):
+                return self._blocked_tank_response(tank_key, sensor_name=sensor_name or "mixed_tank_outlet")
             name = sensor_name or "mixed_tank_outlet"
             model = self._model_for_tank(tank_key, create=bool(tank_key))
             reading = model.sensor_reading(name).as_dict()
@@ -179,6 +188,10 @@ class WaterQualityBackend:
 
     def all_sensors(self, tank_key: str | None = None) -> dict[str, Any]:
         with self._lock:
+            if not self._tank_allowed(tank_key):
+                result = self._blocked_tank_response(tank_key)
+                result["readings"] = []
+                return result
             if tank_key:
                 model = self._model_for_tank(tank_key, create=True)
                 return {
@@ -198,6 +211,10 @@ class WaterQualityBackend:
         positions = payload.get("positions")
         with self._lock:
             tank_key = self._tank_key(payload)
+            if not self._tank_allowed(tank_key):
+                result = self._blocked_tank_response(tank_key)
+                result["values"] = {}
+                return result
             model = self._model_for_tank(tank_key, create=bool(tank_key))
             return {
                 "status": "ok",
@@ -210,12 +227,20 @@ class WaterQualityBackend:
         tags = payload.get("tags")
         with self._lock:
             tank_key = self._tank_key(payload)
+            if not self._tank_allowed(tank_key):
+                result = self._blocked_tank_response(tank_key)
+                result.update({"count": 0, "graph_hash": "", "registered": False})
+                return result
             result = self._model_for_tank(tank_key, create=bool(tank_key)).register_particles(positions, heat_weights, tags)
             self._attach_tank_fields(result, tank_key)
             return result
 
     def registered_particle_values(self, tank_key: str | None = None) -> dict[str, Any]:
         with self._lock:
+            if not self._tank_allowed(tank_key):
+                result = self._blocked_tank_response(tank_key)
+                result["values"] = {}
+                return result
             return {
                 "status": "ok",
                 "values": self._model_for_tank(tank_key, create=bool(tank_key)).registered_particle_values(),
@@ -237,6 +262,8 @@ class WaterQualityBackend:
         key = str(tank_key or "").strip()
         if not key:
             return self.model
+        if not self._tank_allowed(key):
+            raise ValueError(f"water-quality tank is not allowed: {self._tank_id(key)}")
         if key not in self._tank_models:
             if not create:
                 return self.model
@@ -255,7 +282,32 @@ class WaterQualityBackend:
         return {
             key: self._snapshot_for_model(model, key)
             for key, model in sorted(self._tank_models.items())
+            if self._tank_allowed(key)
         }
+
+    @staticmethod
+    def _parse_allowed_tank_ids(raw: str | None) -> set[str]:
+        return {part.strip() for part in str(raw or "").split(",") if part.strip()}
+
+    def _tank_allowed(self, tank_key: str | None) -> bool:
+        key = str(tank_key or "").strip()
+        if not key or not self._allowed_tank_ids:
+            return True
+        tank_id = self._derive_tank_id(key)
+        return key in self._allowed_tank_ids or tank_id in self._allowed_tank_ids
+
+    def _blocked_tank_response(self, tank_key: str | None, **extra: Any) -> dict[str, Any]:
+        key = str(tank_key or "").strip()
+        tank_id = self._derive_tank_id(key) if key else ""
+        result = {
+            "status": "water-quality tank is not allowed",
+            "error": "water-quality sensors not configured for tank",
+            "tank_path": key,
+            "tank_id": tank_id,
+            "allowed_tank_ids": sorted(self._allowed_tank_ids),
+        }
+        result.update(extra)
+        return result
 
     def _sensor_readings(self, model: Any, tank_key: str | None) -> list[dict[str, Any]]:
         readings = []

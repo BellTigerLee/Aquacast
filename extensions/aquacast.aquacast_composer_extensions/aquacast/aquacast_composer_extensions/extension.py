@@ -810,7 +810,10 @@ class CreateSetupExtension(omni.ext.IExt):
         tanks = []
         if self._aquacast_main is not None:
             try:
-                tanks = list(self._aquacast_main.list_fish_tanks())
+                if hasattr(self._aquacast_main, "list_water_quality_sensor_tanks"):
+                    tanks = list(self._aquacast_main.list_water_quality_sensor_tanks())
+                else:
+                    tanks = list(self._aquacast_main.list_fish_tanks())
             except Exception as exc:
                 carb.log_warn(f"[test-Aquacast] Sensor UI tank refresh failed: {exc}")
         labels = self._unique_sensor_tank_labels(tanks)
@@ -1909,10 +1912,29 @@ class CreateSetupExtension(omni.ext.IExt):
             self._local_llm_panel = LocalLLMPanel(
                 aquacast_main=self._aquacast_main,
                 config_getter=_get_runtime_config,
+                post_confirm_callback=self._refresh_after_local_llm_confirm,
             )
         self._register_local_llm_panel_menu()
         if bool(_get_runtime_config("LOCAL_LLM_PANEL_OPEN_ON_STARTUP", False)):
             self._local_llm_panel.show()
+
+    def _refresh_after_local_llm_confirm(self):
+        try:
+            self._sync_control_fields_from_current_snapshot()
+        except Exception as exc:
+            carb.log_warn(f"[test-Aquacast] Local LLM control refresh failed: {exc}")
+        try:
+            self._on_sensor_ui_update(None)
+        except Exception as exc:
+            carb.log_warn(f"[test-Aquacast] Local LLM sensor refresh failed: {exc}")
+        try:
+            self._on_actuator_ui_update(None, force=True)
+        except Exception as exc:
+            carb.log_warn(f"[test-Aquacast] Local LLM actuator refresh failed: {exc}")
+        try:
+            self._refresh_metrics_dashboard(rebuild=False)
+        except Exception as exc:
+            carb.log_warn(f"[test-Aquacast] Local LLM metrics refresh failed: {exc}")
 
     def _register_local_llm_panel_menu(self):
         if self._local_llm_menu_items:

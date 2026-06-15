@@ -301,9 +301,7 @@ def sample_all_water_quality_sensors():
 
 
 def list_water_quality_sensor_names():
-    names = get_global_config("WQ_SENSOR_PRIM_NAMES", list(water_quality_model.DEFAULT_SENSOR_NAMES))
-    sensor_names = [str(name) for name in names]
-    return ["total"] + [name for name in sensor_names if name != "total"]
+    return ["total"] + _water_quality_sensor_names()
 
 
 _WQ_ACTION_SCHEMAS = [
@@ -1163,6 +1161,71 @@ def list_fish_tanks():
     return sorted(waters)
 
 
+def _water_quality_sensor_names():
+    names = get_global_config("WQ_SENSOR_PRIM_NAMES", list(water_quality_model.DEFAULT_SENSOR_NAMES))
+    sensor_names = []
+    for name in names or []:
+        sensor_name = str(name or "").strip()
+        if sensor_name and sensor_name.lower() not in {"total", "all"}:
+            sensor_names.append(sensor_name)
+    return sensor_names
+
+
+def _tank_root_prim_for_water(stage, water_prim):
+    if not water_prim or not water_prim.IsValid():
+        return None
+    parent = stage.GetPrimAtPath(water_prim.GetPath().GetParentPath())
+    fallback = parent if parent and parent.IsValid() else water_prim
+    current = fallback
+    while current and current.IsValid() and current.GetPath() != Sdf.Path.absoluteRootPath:
+        sensors = stage.GetPrimAtPath(current.GetPath().AppendChild("Sensors"))
+        if sensors and sensors.IsValid():
+            return current
+        if current.GetName().startswith("Fishtank_"):
+            return current
+        current = current.GetParent()
+    return fallback
+
+
+def _tank_root_prim_for_tank_path(stage, tank_path):
+    water_prim = _find_water_prim_for_tank(stage, tank_path)
+    if water_prim and water_prim.IsValid():
+        return _tank_root_prim_for_water(stage, water_prim)
+    prim = stage.GetPrimAtPath(tank_path)
+    return prim if prim and prim.IsValid() else None
+
+
+def _water_quality_sensor_path_in_tank(stage, sensor_name, tank_path):
+    sensor = str(sensor_name or "").strip()
+    if not sensor or sensor.lower() in {"total", "all"}:
+        return ""
+    if stage is None or not tank_path:
+        return ""
+    tank_root = _tank_root_prim_for_tank_path(stage, str(tank_path))
+    if not tank_root or not tank_root.IsValid():
+        return ""
+    for prim in Usd.PrimRange(tank_root):
+        if prim and prim.IsValid() and prim.GetName() == sensor:
+            return prim.GetPath().pathString
+    return ""
+
+
+def _tank_has_water_quality_sensor(stage, tank_path):
+    if stage is None or not tank_path:
+        return False
+    for sensor_name in _water_quality_sensor_names():
+        if _water_quality_sensor_path_in_tank(stage, sensor_name, tank_path):
+            return True
+    return False
+
+
+def list_water_quality_sensor_tanks():
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        return []
+    return [tank_path for tank_path in list_fish_tanks() if _tank_has_water_quality_sensor(stage, tank_path)]
+
+
 def _fish_prefix_pattern():
     prefix = str(get_global_config("FISH_NAME_PREFIX", "Fish_"))
     return prefix, re.compile(rf"^{re.escape(prefix)}(\d+)$")
@@ -1491,7 +1554,7 @@ def sync_water_quality_stock_for_tank(tank_path: str):
 
 def _sync_all_water_quality_stock_with_fish():
     results = {}
-    for tank_path in list_fish_tanks():
+    for tank_path in list_water_quality_sensor_tanks():
         results[tank_path] = _sync_water_quality_stock_for_tank(tank_path)
     return results
 
@@ -3747,23 +3810,44 @@ class WaterQualityController:
             name = Path(name).name
         if not name:
             name = "mixed_tank_outlet"
+        tank_key = self._tank_key(tank_path)
+        if tank_key:
+            stage = omni.usd.get_context().get_stage()
+            if stage is None:
+                return {"status": "stage unavailable for sensor validation", "sensor_name": name, "tank_path": tank_key}
+            if not _tank_has_water_quality_sensor(stage, tank_key):
+                return {
+                    "status": "water-quality sensors not found for tank",
+                    "sensor_name": name,
+                    "sensor_path": "",
+                    "tank_path": tank_key,
+                    "tank_name": self._tank_label(tank_key),
+                }
+            if name.lower() not in {"total", "all"} and not _water_quality_sensor_path_in_tank(stage, name, tank_key):
+                return {
+                    "status": "water-quality sensor prim not found in tank",
+                    "sensor_name": name,
+                    "sensor_path": "",
+                    "tank_path": tank_key,
+                    "tank_name": self._tank_label(tank_key),
+                }
         if name.lower() in {"total", "all"}:
-            snap = self.snapshot(tank_path=tank_path)
+            snap = self.snapshot(tank_path=tank_key or None)
             snap["sensor_name"] = "total"
             snap["sensor_path"] = "total"
             return snap
-        model = self._model_for_tank(tank_path, create=bool(tank_path))
-        reading = self._sensor_reading(model, name, tank_path=tank_path)
-        reading.update(self._actuator_status_values(tank_path=tank_path))
-        if tank_path and name != "inlet_reference":
-            particle_reading = self._sample_particle_sensor(name, str(tank_path))
+        model = self._model_for_tank(tank_key or None, create=bool(tank_key))
+        reading = self._sensor_reading(model, name, tank_path=tank_key or None)
+        reading.update(self._actuator_status_values(tank_path=tank_key or None))
+        if tank_key and name != "inlet_reference":
+            particle_reading = self._sample_particle_sensor(name, tank_key)
             if particle_reading is not None:
                 reading.update(particle_reading)
         reading["status"] = "ok"
-        reading["sensor_path"] = self._sensor_path_for_name(name, tank_path=tank_path)
-        if tank_path:
-            reading["tank_path"] = str(tank_path)
-            reading["tank_name"] = self._tank_label(str(tank_path))
+        reading["sensor_path"] = self._sensor_path_for_name(name, tank_path=tank_key or None)
+        if tank_key:
+            reading["tank_path"] = tank_key
+            reading["tank_name"] = self._tank_label(tank_key)
         return reading
 
     def _actuator_status_values(self, tank_path=None):
@@ -3882,16 +3966,36 @@ class WaterQualityController:
         return reading
 
     def sample_all_sensors(self):
-        names = get_global_config("WQ_SENSOR_PRIM_NAMES", list(water_quality_model.DEFAULT_SENSOR_NAMES))
+        names = _water_quality_sensor_names()
         return [self.sample_sensor(name) for name in names]
+
+    def _water_quality_tank_allowed(self, tank_path):
+        key = self._tank_key(tank_path)
+        if not key:
+            return True
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return False
+        return _tank_has_water_quality_sensor(stage, key)
+
+    def _sensorless_tank_result(self, tank_path):
+        key = self._tank_key(tank_path)
+        return {
+            "status": "water-quality sensors not found for tank",
+            "tank_path": key,
+            "tank_name": self._tank_label(key) if key else "",
+        }
 
     def snapshot(self, tank_path=None):
         if self._model is None:
             return {"status": "water quality model is not ready"}
-        model = self._model_for_tank(tank_path, create=bool(tank_path))
-        snap = self._snapshot_from_model(model, tank_path=tank_path)
+        key = self._tank_key(tank_path)
+        if key and not self._water_quality_tank_allowed(key):
+            return self._sensorless_tank_result(key)
+        model = self._model_for_tank(key or None, create=bool(key))
+        snap = self._snapshot_from_model(model, tank_path=key or None)
         snap["view_variable"] = self._view_variable()
-        if not tank_path and not self._using_backend and self._tank_models:
+        if not key and not self._using_backend and self._tank_models:
             snap["tank_snapshots"] = {
                 key: self._snapshot_from_model(model, tank_path=key)
                 for key, model in sorted(self._tank_models.items())
@@ -3929,10 +4033,14 @@ class WaterQualityController:
             return {"status": "error", "error": "missing action type"}
         before = {}
         try:
-            tank_path = action.get("tank_path")
-            model = self._model_for_tank(tank_path, create=bool(tank_path))
+            tank_path = self._tank_key(action.get("tank_path"))
+            if tank_path and not self._water_quality_tank_allowed(tank_path):
+                result = self._sensorless_tank_result(tank_path)
+                result.update({"action": kind, "error": result["status"]})
+                return result
+            model = self._model_for_tank(tank_path or None, create=bool(tank_path))
             try:
-                before = self._snapshot_from_model(model, tank_path=tank_path)
+                before = self._snapshot_from_model(model, tank_path=tank_path or None)
             except Exception as exc:
                 carb.log_warn(f"[Aquacast WQ Control] Failed to read pre-action snapshot action={kind}: {exc}")
             if hasattr(model, "apply_control"):
@@ -4241,29 +4349,38 @@ class WaterQualityController:
         return model.sensor_reading(name).as_dict()
 
     def _particle_values(self, heat_weights, positions=None, tank_path=None):
-        model = self._model_for_tank(tank_path, create=bool(self._tank_key(tank_path)))
+        key = self._tank_key(tank_path)
+        if key and not self._water_quality_tank_allowed(key):
+            return {}
+        model = self._model_for_tank(key or None, create=bool(key))
         if model is None:
             return {}
         if self._using_backend:
-            return model.particle_values(heat_weights, positions, tank_path=self._tank_key(tank_path) or None)
+            return model.particle_values(heat_weights, positions, tank_path=key or None)
         return model.particle_values(heat_weights, positions)
 
     def _registered_particle_values(self, tank_path=None):
-        model = self._model_for_tank(tank_path, create=bool(self._tank_key(tank_path)))
+        key = self._tank_key(tank_path)
+        if key and not self._water_quality_tank_allowed(key):
+            return {}
+        model = self._model_for_tank(key or None, create=bool(key))
         if model is None:
             return {}
         if self._using_backend:
-            return model.particle_values([], None, tank_path=self._tank_key(tank_path) or None)
+            return model.particle_values([], None, tank_path=key or None)
         if not hasattr(model, "registered_particle_values"):
             return {}
         return model.registered_particle_values()
 
     def _register_particles(self, positions, heat_weights, tank_path=None):
-        model = self._model_for_tank(tank_path, create=bool(self._tank_key(tank_path)))
+        key = self._tank_key(tank_path)
+        if key and not self._water_quality_tank_allowed(key):
+            return {"status": "skipped", "count": 0, "reason": "water-quality sensors not found for tank", "tank_path": key}
+        model = self._model_for_tank(key or None, create=bool(key))
         if model is None or not hasattr(model, "register_particles"):
             return {"status": "error", "error": "model does not support particle registration"}
         if self._using_backend:
-            return model.register_particles(positions, heat_weights, tank_path=self._tank_key(tank_path) or None)
+            return model.register_particles(positions, heat_weights, tank_path=key or None)
         return model.register_particles(positions, heat_weights)
 
     def _current_particle_tank_path(self, temp_controller):
@@ -4299,7 +4416,8 @@ class WaterQualityController:
         if stage is None or not bool(get_global_config("ENABLE_FISH_SURVIVAL", True)):
             return {}
         results = {}
-        for tank_path in list_fish_tanks():
+        # Only sensor-equipped tanks have water-quality models; sensorless fish still swim normally.
+        for tank_path in list_water_quality_sensor_tanks():
             try:
                 snapshot = self.snapshot(tank_path=tank_path)
                 result = _advance_fish_survival_for_tank(stage, tank_path, snapshot)
@@ -4389,6 +4507,8 @@ class WaterQualityController:
             return
         heat_weights = getattr(temp_controller, "_particle_heat_weights", None) or []
         tank_path = self._current_particle_tank_path(temp_controller)
+        if tank_path and not self._water_quality_tank_allowed(tank_path):
+            return
         signature = (
             tank_path,
             len(positions),
@@ -4677,11 +4797,7 @@ class WaterQualityController:
     def _sensor_path_for_name(self, sensor_name, tank_path=None):
         stage = omni.usd.get_context().get_stage()
         if stage is not None and tank_path:
-            tank_root = self._tank_root_prim(stage, str(tank_path))
-            if tank_root and tank_root.IsValid():
-                for prim in Usd.PrimRange(tank_root):
-                    if prim and prim.IsValid() and prim.GetName() == sensor_name:
-                        return prim.GetPath().pathString
+            return _water_quality_sensor_path_in_tank(stage, sensor_name, str(tank_path))
         for path in _get_topology_paths_by_name(sensor_name):
             return path
         suffix = f"/{sensor_name}"
@@ -4692,21 +4808,7 @@ class WaterQualityController:
         return ""
 
     def _tank_root_prim(self, stage, tank_path):
-        water_prim = _find_water_prim_for_tank(stage, tank_path)
-        if water_prim and water_prim.IsValid():
-            parent = stage.GetPrimAtPath(water_prim.GetPath().GetParentPath())
-            fallback = parent if parent and parent.IsValid() else water_prim
-            current = fallback
-            while current and current.IsValid() and current.GetPath() != Sdf.Path.absoluteRootPath:
-                sensors = stage.GetPrimAtPath(current.GetPath().AppendChild("Sensors"))
-                if sensors and sensors.IsValid():
-                    return current
-                if current.GetName().startswith("Fishtank_"):
-                    return current
-                current = current.GetParent()
-            return fallback
-        prim = stage.GetPrimAtPath(tank_path)
-        return prim if prim and prim.IsValid() else None
+        return _tank_root_prim_for_tank_path(stage, tank_path)
 
     def _tank_label(self, tank_path):
         path = str(tank_path or "")
