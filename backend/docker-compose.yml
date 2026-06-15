@@ -104,6 +104,7 @@ services:
       AQUACAST_KAFKA_TOPIC: aquacast.water_quality
       AQUACAST_KAFKA_THRESHOLD_ALERT_TOPIC: aquacast.threshold_alert
       AQUACAST_THRESHOLD_ALERT_REPEAT_SECONDS: "60"
+      AQUACAST_ALLOWED_TANK_IDS: Fishtank_1,Fishtank_2,Fishtank_3,Fishtank_4,Fishtank_5,Fishtank_6
 
 volumes:
   sqlitebrowser-config:

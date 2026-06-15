@@ -149,7 +149,7 @@ class KafkaPublisher:
             return []
 
         tank_readings = [reading for reading in readings if self._has_tank_identity(reading)]
-        candidates = tank_readings or readings
+        candidates = tank_readings
         publishable = []
         seen = set()
         for reading in candidates:
@@ -264,7 +264,7 @@ class KafkaPublisher:
         tank_snapshots = root_snapshot.get("tank_snapshots") if isinstance(root_snapshot, dict) else None
         if isinstance(tank_snapshots, dict) and tank_snapshots:
             return [dict(snapshot) for _key, snapshot in sorted(tank_snapshots.items()) if isinstance(snapshot, dict)]
-        return [dict(root_snapshot)] if isinstance(root_snapshot, dict) else []
+        return []
 
     def _should_emit_threshold_alert(self, tank_id: str, violated: tuple[str, ...], event_time_ms: int) -> bool:
         previous = self._threshold_alert_state.get(tank_id)

@@ -49,7 +49,7 @@ class AIProposalClient:
     def _post_json(self, path: str, payload: dict) -> dict:
         request = urllib.request.Request(
             url=f"{self.base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Accept": "application/json", "Content-Type": "application/json"},
             method="POST",
         )

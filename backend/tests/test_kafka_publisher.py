@@ -19,6 +19,8 @@ class FakeBackend:
             "readings": [
                 {
                     "sensor_name": "mixed_tank_outlet",
+                    "tank_id": "Fishtank_1",
+                    "tank_path": "/World/Fishtank_1/Water",
                     "dissolved_oxygen_mg_l": 9.0,
                 }
             ]
