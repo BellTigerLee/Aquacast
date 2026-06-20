@@ -17,6 +17,14 @@ def test_model_steps_and_keeps_state_nonnegative():
     assert 4.0 <= state.ph <= 10.0
 
 
+def test_default_initial_temperature_is_salmon_startup_value():
+    default_model = WaterQualityModel({}, {}, {"initial_state": {}})
+    baseline = load_model(DATA / "wq_constants.json", DATA / "wq_feed_rate.json", DATA / "wq_scenarios.json", "baseline")
+
+    assert default_model.state.temperature_c == 10.5
+    assert baseline.state.temperature_c == 10.5
+
+
 def test_all_named_sensors_return_readings():
     model = WaterQualityModel(
         {"tank_volume_l": 1000.0},

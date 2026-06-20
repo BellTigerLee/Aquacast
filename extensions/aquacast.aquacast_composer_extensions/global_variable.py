@@ -34,8 +34,8 @@ FISH_POPULATION_CSV_PATH = "~/cs-project/Aquacast/extensions/aquacast.aquacast_c
 SYNC_WQ_STOCK_WITH_FISH_POPULATION = True
 WQ_METRIC_BAND_THRESHOLDS = {
     "temperature_c": {
-        "healthy": [{"gte": 8.0, "lte": 12.0}],
-        "warn": [{"lt": 8.0}, {"gt": 12.0, "lte": 18.0}],
+        "healthy": [{"gte": 11.5, "lte": 12.5}],
+        "warn": [{"lt": 11.5}, {"gt": 12.5, "lte": 18.0}],
         "critical": [{"gt": 18.0}],
     },
     "dissolved_oxygen_mg_l": {
@@ -157,8 +157,8 @@ ISOSURFACE_PRIM_PATH = ""
 TEMP_VIS_USE_STAGE_TOPOLOGY_JSON = False
 TEMP_VIS_INIT_RETRY_SECONDS = 0.2
 
-INITIAL_WATER_TEMP_C = 14.0
-INLET_WATER_TEMP_C = 14.0
+INITIAL_WATER_TEMP_C = 10.5
+INLET_WATER_TEMP_C = 10.5
 ROOM_TEMP_C = 22.0
 THERMAL_K_ROOM = 0.012
 THERMAL_K_INFLOW = 0.022
@@ -276,7 +276,20 @@ WQ_METRICS_DASHBOARD_METRICS = [
     "nitrite_mg_l",
     "nitrate_mg_l",
 ]
+WQ_METRICS_DASHBOARD_BEGINNER_METRICS = [
+    "temperature_c",
+    "dissolved_oxygen_mg_l",
+    "tan_mg_l",
+    "nh3_mg_l",
+    "ph",
+    "co2_mg_l",
+    "turbidity_ntu",
+]
 WQ_METRIC_DASHBOARD_THRESHOLDS = WQ_METRIC_BAND_THRESHOLDS
+
+# Operator-facing profile. Use "beginner" for guided service wording or
+# "expert" for full technical evidence and all monitored metrics.
+AQUACAST_OPERATOR_LEVEL = "beginner"
 
 # Local LLM UI panel integrated into the Aquacast extension.
 # Ollama is exposed on 1234 by docker-compose.ollama.yml.
@@ -304,16 +317,26 @@ LOCAL_LLM_WQ_CONTEXT_ALERT_LIMIT = 200
 LOCAL_LLM_WQ_CONTEXT_MAX_CHARS = 5000
 LOCAL_LLM_PANEL_DISPLAY_LOG_LIMIT = 100
 LOCAL_LLM_RESPONSE_LOG_LIMIT = 0  # 0 keeps the panel response log unbounded for the session.
+ENABLE_LOCAL_LLM_AUTO_ALERT_PROPOSALS = True
+LOCAL_LLM_AUTO_ALERT_CHECK_INTERVAL_SECONDS = 10.0
+LOCAL_LLM_AUTO_ALERT_SAME_EVENT_COOLDOWN_SECONDS = 60.0
+LOCAL_LLM_AUTO_ALERT_RETRY_SECONDS = 60.0
+LOCAL_LLM_AUTO_ALERT_MAX_PROPOSALS_PER_CHECK = 1
 AI_PROPOSAL_BACKEND_URL = "http://127.0.0.1:8000"
 AI_PROPOSAL_TIMEOUT_SECONDS = 60.0
 AI_PROPOSAL_INBOX_LIMIT = 20
+
+# Beginner onboarding panel. Keep copy ASCII/English for Kit font compatibility.
+ENABLE_AQUACAST_TUTORIAL_PANEL = True
+AQUACAST_TUTORIAL_OPEN_ON_STARTUP = True
 
 # Practical operating thresholds for salmon/RAS-style water-quality views.
 # Units match snapshot/sensor keys: degC, mg/L, pH, mg/L as CaCO3, ppt, NTU.
 WQ_THRESHOLDS = {
     "temperature": {
-        "operating": (12.0, 15.0),
-        "warning": (16.0, 18.0),
+        "operating": (11.5, 12.5),
+        "warning_low": 11.5,
+        "warning": (12.5, 18.0),
         "critical_high": 20.0,
     },
     "dissolved_oxygen": {

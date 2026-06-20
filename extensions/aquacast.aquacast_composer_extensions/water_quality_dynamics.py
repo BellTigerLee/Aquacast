@@ -166,7 +166,7 @@ def nh3_fraction(temp_c: float, ph: float) -> float:
 
 def derivatives(state: Mapping[str, float], params: Mapping[str, float | bool]) -> dict[str, float]:
     """Return CSTR derivatives for DO/TAN/CO2/Alk/Salinity/Turbidity."""
-    temp_c = float(state.get("temperature_c", params.get("temperature_c", 14.0)))
+    temp_c = float(state.get("temperature_c", params.get("temperature_c", 10.5)))
     do = float(state.get("dissolved_oxygen_mg_l", state.get("do_mg_l", 9.0)))
     tan = max(0.0, float(state.get("tan_mg_l", 0.0)))
     co2 = max(0.0, float(state.get("co2_mg_l", 0.0)))

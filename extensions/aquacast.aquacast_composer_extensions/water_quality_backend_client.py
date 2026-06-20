@@ -107,7 +107,7 @@ class WaterQualityBackendClient:
         turbidity_weight = np.clip(0.55 * weights + 0.45 * (1.0 - y_norm), 0.0, 1.0)
         salinity_weight = np.clip(0.55 * radial_norm + 0.45 * y_norm, 0.0, 1.0)
 
-        temperature = self._snapshot_float("temperature_c", 14.0) + 0.15 * weights
+        temperature = self._snapshot_float("temperature_c", 10.5) + 0.15 * weights
         tan = np.maximum(0.0, self._snapshot_float("tan_mg_l", 0.0) * (0.78 + 0.44 * tan_weight))
         co2 = np.maximum(0.0, self._snapshot_float("co2_mg_l", 0.0) * (0.82 + 0.36 * co2_weight))
         do = np.maximum(0.0, self._snapshot_float("dissolved_oxygen_mg_l", 9.0) * (0.92 + 0.16 * do_weight))

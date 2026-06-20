@@ -29,7 +29,7 @@ DEFAULT_SENSOR_NAMES = (
 
 @dataclass
 class WaterQualityState:
-    temperature_c: float = 14.0
+    temperature_c: float = 10.5
     dissolved_oxygen_mg_l: float = 9.0
     tan_mg_l: float = 0.3
     co2_mg_l: float = 5.0
@@ -620,7 +620,7 @@ class WaterQualityModel:
 
     def _state_from_initial(self, initial: Mapping[str, Any]) -> WaterQualityState:
         return WaterQualityState(
-            temperature_c=float(initial.get("temperature_c", initial.get("temperature", 14.0))),
+            temperature_c=float(initial.get("temperature_c", initial.get("temperature", 10.5))),
             dissolved_oxygen_mg_l=float(initial.get("dissolved_oxygen_mg_l", initial.get("do_mg_l", 9.0))),
             tan_mg_l=float(initial.get("tan_mg_l", 0.3)),
             co2_mg_l=float(initial.get("co2_mg_l", 5.0)),

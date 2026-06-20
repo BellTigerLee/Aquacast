@@ -1,7 +1,7 @@
 {
   "baseline": {
     "initial_state": {
-      "temperature_c": 14.0,
+      "temperature_c": 10.5,
       "dissolved_oxygen_mg_l": 9.0,
       "tan_mg_l": 0.3,
       "co2_mg_l": 5.0,
@@ -13,7 +13,7 @@
   },
   "normal": {
     "initial_state": {
-      "temperature_c": 14.0,
+      "temperature_c": 10.5,
       "dissolved_oxygen_mg_l": 9.0,
       "tan_mg_l": 0.3,
       "co2_mg_l": 5.0,
@@ -37,7 +37,7 @@
   },
   "pump_off": {
     "initial_state": {
-      "temperature_c": 14.0,
+      "temperature_c": 10.5,
       "dissolved_oxygen_mg_l": 8.4,
       "tan_mg_l": 0.45,
       "co2_mg_l": 8.0,
@@ -53,7 +53,7 @@
   },
   "biofilter_off": {
     "initial_state": {
-      "temperature_c": 14.0,
+      "temperature_c": 10.5,
       "dissolved_oxygen_mg_l": 8.8,
       "tan_mg_l": 0.6,
       "co2_mg_l": 6.5,
@@ -68,7 +68,7 @@
   },
   "overfeed": {
     "initial_state": {
-      "temperature_c": 14.0,
+      "temperature_c": 10.5,
       "dissolved_oxygen_mg_l": 8.6,
       "tan_mg_l": 0.45,
       "co2_mg_l": 7.0,

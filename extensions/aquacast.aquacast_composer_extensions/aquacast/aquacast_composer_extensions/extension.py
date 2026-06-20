@@ -329,6 +329,13 @@ class CreateSetupExtension(omni.ext.IExt):
         "warn": 0xFF302812,
         "critical": 0xFF301419,
     }
+    _BEGINNER_SCENARIOS = (
+        ("baseline", "Normal State", "Safe baseline tank conditions."),
+        ("overfeed", "Too Much Feed", "Extra feed increases waste and turbidity."),
+        ("pump_off", "Pump Off", "Water exchange stops for the selected tank."),
+        ("biofilter_off", "Filter Failure", "Biofilter is disabled and ammonia can rise."),
+        ("high_temp_spike", "Water Too Hot", "Temperature jumps into a critical range."),
+    )
 
     def on_startup(self, _ext_id):
         """
@@ -380,6 +387,8 @@ class CreateSetupExtension(omni.ext.IExt):
         self._control_fields = {}
         self._control_status_label = None
         self._control_rebuild_requested = False
+        self._tutorial_window = None
+        self._tutorial_menu_items = []
         self._actuator_window = None
         self._actuator_update_sub = None
         self._actuator_menu_items = []
@@ -552,6 +561,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._create_sensor_window()
         self._create_wq_view_window()
         self._create_control_window()
+        self._create_tutorial_window()
         self._create_actuator_window()
         self._create_metrics_dashboard_window()
         self._create_local_llm_panel()
@@ -1156,7 +1166,7 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._control_window is not None:
             return
 
-        self._control_window = ui.Window("Aquacast Tank Controls", width=500, height=560, visible=True)
+        self._control_window = ui.Window("Aquacast Tank Controls", width=560, height=680, visible=True)
         self._refresh_control_tank_data()
         self._build_control_window_contents()
         self._register_control_window_menu()
@@ -1223,8 +1233,28 @@ class CreateSetupExtension(omni.ext.IExt):
 
                     self._control_status_label = ui.Label("Ready", height=38, word_wrap=True)
 
+                    ui.Label("One-Click Demo Scenarios", height=22)
+                    ui.Label(
+                        "Pick a tank, then click one button. The selected tank switches to that demo immediately.",
+                        height=34,
+                        word_wrap=True,
+                    )
+                    for row_start in range(0, len(self._BEGINNER_SCENARIOS), 2):
+                        with ui.HStack(height=32, spacing=8):
+                            for name, label, _hint in self._BEGINNER_SCENARIOS[row_start: row_start + 2]:
+                                ui.Button(
+                                    label,
+                                    width=180,
+                                    clicked_fn=lambda scenario=name, display=label: self._control_scenario(scenario, display),
+                                )
+                    ui.Label("Scenario Guide", height=20)
+                    for _name, label, hint in self._BEGINNER_SCENARIOS:
+                        ui.Label(f"{label}: {hint}", height=22, word_wrap=True)
+
+                    ui.Label("Advanced Controls", height=22)
+
                     ui.Label("Thermal", height=20)
-                    self._control_float_row("temperature_c", "Set Temp C", 14.0, "Apply", lambda: self._control_action("set_temperature", temperature_c=self._control_float("temperature_c", 14.0)))
+                    self._control_float_row("temperature_c", "Set Temp C", 10.5, "Apply", lambda: self._control_action("set_temperature", temperature_c=self._control_float("temperature_c", 10.5)))
                     self._control_float_row("heater_w", "Heater W", 0.0, "Apply", lambda: self._control_action("set_heater", power_w=self._control_float("heater_w", 0.0)))
                     self._control_float_row("inlet_temp_c", "Inlet Temp C", 12.0, "Apply", lambda: self._control_action("set_inlet_temperature", temperature_c=self._control_float("inlet_temp_c", 12.0)))
 
@@ -1269,13 +1299,10 @@ class CreateSetupExtension(omni.ext.IExt):
                         ui.Button("Salt +0.3", clicked_fn=lambda: self._control_action("dose_salt", ppt=0.3))
                         ui.Button("Turb +5", clicked_fn=lambda: self._control_action("add_turbidity", ntu=5.0))
 
-                    ui.Label("Scenarios", height=20)
-                    with ui.HStack(height=28, spacing=6):
-                        ui.Button("Baseline", clicked_fn=lambda: self._control_action("load_scenario", name="baseline"))
-                        ui.Button("Overfeed", clicked_fn=lambda: self._control_action("load_scenario", name="overfeed"))
-                        ui.Button("Pump Off", clicked_fn=lambda: self._control_action("load_scenario", name="pump_off"))
-                        ui.Button("Biofilter Off", clicked_fn=lambda: self._control_action("load_scenario", name="biofilter_off"))
                     self._sync_control_fields_from_current_snapshot()
+
+    def _control_scenario(self, name, label):
+        self._control_action("load_scenario", name=name, _display_name=label)
 
     def _control_float_row(self, key, label, default, button_label, clicked_fn):
         with ui.HStack(height=26, spacing=6):
@@ -1314,6 +1341,7 @@ class CreateSetupExtension(omni.ext.IExt):
         return self._control_tanks[index]
 
     def _control_action(self, action, **params):
+        display_name = str(params.pop("_display_name", action) or action)
         if self._aquacast_main is None or not hasattr(self._aquacast_main, "execute_water_quality_action"):
             self._set_control_status("action API unavailable")
             return
@@ -1321,12 +1349,12 @@ class CreateSetupExtension(omni.ext.IExt):
         try:
             result = self._aquacast_main.execute_water_quality_action(action, tank_path=tank, **params)
         except Exception as exc:
-            self._set_control_status(f"{action} failed: {exc}")
+            self._set_control_status(f"{display_name} failed: {exc}")
             return
         status = result.get("status", "unknown") if isinstance(result, dict) else "unknown"
         if status == "ok":
             self._sync_control_fields_from_result(action, result)
-            detail = f"{action} applied"
+            detail = f"Started: {display_name}" if action == "load_scenario" else f"{display_name} applied"
             if tank:
                 detail += f" -> {self._sensor_tank_label(tank)}"
             if isinstance(result, dict):
@@ -1350,7 +1378,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 pass
         else:
             error = result.get("error", status) if isinstance(result, dict) else status
-            self._set_control_status(f"{action} failed: {error}")
+            self._set_control_status(f"{display_name} failed: {error}")
 
     def _sync_control_fields_from_current_snapshot(self):
         if self._aquacast_main is None or not hasattr(self._aquacast_main, "get_quality_snapshot"):
@@ -1397,6 +1425,85 @@ class CreateSetupExtension(omni.ext.IExt):
     def _set_control_status(self, text):
         if self._control_status_label is not None:
             self._control_status_label.text = str(text)
+
+
+    def _create_tutorial_window(self):
+        if not bool(_get_runtime_config("ENABLE_AQUACAST_TUTORIAL_PANEL", True)):
+            return
+        if self._tutorial_window is None:
+            visible = bool(_get_runtime_config("AQUACAST_TUTORIAL_OPEN_ON_STARTUP", True))
+            self._tutorial_window = ui.Window("Aquacast First Steps", width=560, height=520, visible=visible)
+            self._build_tutorial_window_contents()
+        self._register_tutorial_window_menu()
+
+    def _register_tutorial_window_menu(self):
+        if self._tutorial_menu_items:
+            return
+        self._tutorial_menu_items = [
+            MenuItemDescription(
+                name="Aquacast/First Steps Tutorial",
+                onclick_fn=self._show_tutorial_window,
+            )
+        ]
+        omni.kit.menu.utils.add_menu_items(self._tutorial_menu_items, name="Window")
+
+    def _show_tutorial_window(self):
+        if self._tutorial_window is None:
+            self._create_tutorial_window()
+            return
+        self._tutorial_window.visible = True
+
+    def _build_tutorial_window_contents(self):
+        if self._tutorial_window is None:
+            return
+        with self._tutorial_window.frame:
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=8):
+                    ui.Label("First Steps Tutorial", height=26)
+                    ui.Label(
+                        "Use this guide to run a demo scenario, read the tank state, and practice the confirm workflow.",
+                        height=38,
+                        word_wrap=True,
+                    )
+
+                    ui.Label("1. Choose a tank", height=22)
+                    ui.Label(
+                        "Open Tank Controls and select the tank you want to change. All one-click scenarios apply only to that selected tank.",
+                        height=42,
+                        word_wrap=True,
+                    )
+
+                    ui.Label("2. Start a one-click scenario", height=22)
+                    ui.Label(
+                        "Click Normal State, Too Much Feed, Pump Off, Filter Failure, or Water Too Hot. The tank state changes immediately.",
+                        height=42,
+                        word_wrap=True,
+                    )
+
+                    ui.Label("3. Watch the readings", height=22)
+                    ui.Label(
+                        "Use Sensor Overview and Metrics Dashboard to see temperature, oxygen, ammonia, pH, CO2, and turbidity changes.",
+                        height=42,
+                        word_wrap=True,
+                    )
+
+                    ui.Label("4. Review AI proposals", height=22)
+                    ui.Label(
+                        "Warn or critical states can create an AI proposal. Open Local LLM Panel, read the explanation, then Confirm or Reject.",
+                        height=42,
+                        word_wrap=True,
+                    )
+
+                    ui.Label("Scenario meanings", height=22)
+                    for _name, label, hint in self._BEGINNER_SCENARIOS:
+                        ui.Label(f"{label}: {hint}", height=24, word_wrap=True)
+
+                    with ui.HStack(height=32, spacing=8):
+                        ui.Button("Open Tank Controls", clicked_fn=self._show_control_window)
+                        ui.Button("Open Sensors", clicked_fn=self._show_sensor_window)
+                    with ui.HStack(height=32, spacing=8):
+                        ui.Button("Open Metrics", clicked_fn=self._show_metrics_dashboard_window)
+                        ui.Button("Open Local LLM", clicked_fn=self._show_local_llm_panel)
 
 
     def _create_actuator_window(self):
@@ -1517,13 +1624,23 @@ class CreateSetupExtension(omni.ext.IExt):
         return bands.normalize_bands(values)
 
     def _dashboard_metric_specs(self):
-        configured = _get_runtime_config(
-            "WQ_METRICS_DASHBOARD_METRICS",
-            [spec["key"] for spec in self._METRIC_DASHBOARD_SPECS],
-        )
+        if self._operator_level() == "beginner":
+            configured = _get_runtime_config(
+                "WQ_METRICS_DASHBOARD_BEGINNER_METRICS",
+                ["temperature_c", "dissolved_oxygen_mg_l", "tan_mg_l", "nh3_mg_l", "ph", "co2_mg_l", "turbidity_ntu"],
+            )
+        else:
+            configured = _get_runtime_config(
+                "WQ_METRICS_DASHBOARD_METRICS",
+                [spec["key"] for spec in self._METRIC_DASHBOARD_SPECS],
+            )
         configured_keys = {str(key) for key in configured} if isinstance(configured, (list, tuple, set)) else set()
         specs = [spec for spec in self._METRIC_DASHBOARD_SPECS if not configured_keys or spec["key"] in configured_keys]
         return specs or list(self._METRIC_DASHBOARD_SPECS)
+
+    def _operator_level(self):
+        raw = _get_runtime_config("AQUACAST_OPERATOR_LEVEL", _get_runtime_config("OPERATOR_LEVEL", "beginner"))
+        return "expert" if str(raw or "").strip().lower() == "expert" else "beginner"
 
     def _load_metric_thresholds(self):
         if self._aquacast_main and hasattr(self._aquacast_main, "get_water_quality_metric_thresholds"):
@@ -1595,7 +1712,7 @@ class CreateSetupExtension(omni.ext.IExt):
         with self._metrics_window.frame:
             with ui.ScrollingFrame():
                 with ui.VStack(spacing=8):
-                    ui.Label("Metrics Dashboard", height=24)
+                    ui.Label(f"Metrics Dashboard ({self._operator_level()} mode)", height=24)
                     with ui.HStack(height=28, spacing=6):
                         ui.Label("Tank:", width=58)
                         self._metrics_tank_index = self._clamp_index(self._metrics_tank_index, self._metrics_tank_labels)
@@ -1684,7 +1801,7 @@ class CreateSetupExtension(omni.ext.IExt):
             history = self._append_metric_history(tank_path, key, value, interval)
             self._update_metric_panel(spec, value, history)
         label = self._sensor_tank_label(tank_path)
-        self._set_metrics_status(f"Live trend: {label} | {len(self._dashboard_metric_specs())} metrics")
+        self._set_metrics_status(f"Live trend: {label} | {self._operator_level()} mode | {len(self._dashboard_metric_specs())} metrics")
 
     def _append_metric_history(self, tank_path, key, value, interval):
         history_key = (str(tank_path or ""), str(key))
@@ -1915,6 +2032,8 @@ class CreateSetupExtension(omni.ext.IExt):
                 post_confirm_callback=self._refresh_after_local_llm_confirm,
             )
         self._register_local_llm_panel_menu()
+        if bool(_get_runtime_config("ENABLE_LOCAL_LLM_AUTO_ALERT_PROPOSALS", True)):
+            self._local_llm_panel.start_auto_alert_monitor()
         if bool(_get_runtime_config("LOCAL_LLM_PANEL_OPEN_ON_STARTUP", False)):
             self._local_llm_panel.show()
 
@@ -2557,6 +2676,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._sensor_window = None
         self._wq_view_window = None
         self._control_window = None
+        self._tutorial_window = None
         self._actuator_window = None
         self._teardown_metrics_dashboard_window()
         self._teardown_local_llm_panel()
@@ -2570,6 +2690,9 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._control_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._control_menu_items, "Window")
             self._control_menu_items = []
+        if self._tutorial_menu_items:
+            omni.kit.menu.utils.remove_menu_items(self._tutorial_menu_items, "Window")
+            self._tutorial_menu_items = []
         if self._actuator_menu_items:
             omni.kit.menu.utils.remove_menu_items(self._actuator_menu_items, "Window")
             self._actuator_menu_items = []

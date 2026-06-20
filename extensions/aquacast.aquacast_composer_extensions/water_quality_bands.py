@@ -20,8 +20,8 @@ STATE_PRIORITY = {
 
 DEFAULT_WQ_METRIC_BANDS: dict[str, dict[str, list[dict[str, float]]]] = {
     "temperature_c": {
-        STATE_HEALTHY: [{"gte": 8.0, "lte": 12.0}],
-        STATE_WARN: [{"lt": 8.0}, {"gt": 12.0, "lte": 18.0}],
+        STATE_HEALTHY: [{"gte": 11.5, "lte": 12.5}],
+        STATE_WARN: [{"lt": 11.5}, {"gt": 12.5, "lte": 18.0}],
         STATE_CRITICAL: [{"gt": 18.0}],
     },
     "dissolved_oxygen_mg_l": {

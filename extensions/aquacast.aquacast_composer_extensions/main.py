@@ -2767,9 +2767,9 @@ class WaterTempController:
         self._initialized = False
         self._isosurface_prim = None
         self._display_color_attr = None
-        self._T = float(get_global_config("INITIAL_WATER_TEMP_C", 14.0))
+        self._T = float(get_global_config("INITIAL_WATER_TEMP_C", 10.5))
         self._inflow_enabled = bool(get_global_config("INFLOW_ENABLED_DEFAULT", True))
-        inlet = float(get_global_config("INLET_WATER_TEMP_C", 14.0))
+        inlet = float(get_global_config("INLET_WATER_TEMP_C", 10.5))
         room = float(get_global_config("ROOM_TEMP_C", 22.0))
         if inlet > room:
             carb.log_warn(
@@ -3606,7 +3606,7 @@ class WaterTempController:
 
         del dt
         t_room = float(get_global_config("ROOM_TEMP_C", 22.0))
-        t_inlet = float(get_global_config("INLET_WATER_TEMP_C", 14.0))
+        t_inlet = float(get_global_config("INLET_WATER_TEMP_C", 10.5))
         k_room = float(get_global_config("THERMAL_K_ROOM", 0.012))
         k_inflow = float(get_global_config("THERMAL_K_INFLOW", 0.022))
         quality_controller = globals().get("_water_quality_controller")
@@ -3669,7 +3669,7 @@ class WaterTempController:
             self._particle_water_radius = None
             self._particle_water_height = None
             self._prev_rgb = None
-            self._T = float(get_global_config("INITIAL_WATER_TEMP_C", 14.0))
+            self._T = float(get_global_config("INITIAL_WATER_TEMP_C", 10.5))
             self._last_update_time = None
             self._last_particle_update_time = 0.0
             self._particle_elapsed = 0.0
@@ -4488,7 +4488,7 @@ class WaterQualityController:
                 return float(controller._T)
             except Exception:
                 pass
-        return float(get_global_config("INITIAL_WATER_TEMP_C", 14.0))
+        return float(get_global_config("INITIAL_WATER_TEMP_C", 10.5))
 
     def _current_inflow_enabled(self):
         controller = globals().get("_water_temp_controller")
@@ -4679,7 +4679,7 @@ class WaterQualityController:
         if len(heat_weights) != expected_count:
             return []
         try:
-            bulk_t = float(getattr(temp_controller, "_T", get_global_config("INITIAL_WATER_TEMP_C", 14.0)))
+            bulk_t = float(getattr(temp_controller, "_T", get_global_config("INITIAL_WATER_TEMP_C", 10.5)))
             elapsed = float(getattr(temp_controller, "_particle_elapsed", 0.0))
             heat_delta = float(get_global_config("TEMP_PARTICLE_HEAT_DELTA_C", 0.0))
             spread_rate = float(get_global_config("TEMP_PARTICLE_SPREAD_RATE", 0.05))

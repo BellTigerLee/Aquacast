@@ -46,6 +46,24 @@ class LocalLLMPanel:
         "set_nitrification_rate",
         "load_scenario",
     }
+    _BEGINNER_DEFAULT_PROMPT = (
+        "현재 Aquacast 수질 상태를 초보자용으로 설명하고, "
+        "가장 먼저 확인할 항목 2가지를 알려줘."
+    )
+    _EXPERT_DEFAULT_PROMPT = (
+        "Analyze the current Aquacast water-quality state using the latest SQLite/RAG context. "
+        "Include threshold bands, trend deltas, likely cause, and control implications."
+    )
+    _BEGINNER_SYSTEM_INSTRUCTION = (
+        "Operator profile: beginner. Answer in concise Korean unless the user asks otherwise. "
+        "Explain operational meaning before technical detail, use plain terms for DO, TAN/NH3, CO2, pH, and turbidity, "
+        "and finish with 1-3 safe next checks. Do not invent data and do not imply an actuator was applied unless confirmed."
+    )
+    _EXPERT_SYSTEM_INSTRUCTION = (
+        "Operator profile: expert. Be concise but technical. Use the latest values, healthy/warn/critical bands, "
+        "trend deltas, threshold alerts, actuator state, and RAG/SQLite source limitations when relevant. "
+        "Call out missing evidence instead of guessing."
+    )
 
     def __init__(self, *, aquacast_main=None, config_getter=None, post_confirm_callback=None):
         self._aquacast_main = aquacast_main
@@ -54,6 +72,10 @@ class LocalLLMPanel:
         self._window = None
         self._running = False
         self._task = None
+        self._auto_alert_running = False
+        self._auto_alert_task = None
+        self._auto_alert_state = {}
+        self._auto_alert_attempts = {}
         self._rebuild_task = None
         self._messages = []
         self._server_url_model = None
@@ -71,11 +93,13 @@ class LocalLLMPanel:
             self._window.visible = True
         self._append_message_once(
             "System",
-            "Local LLM Panel ready. It can use Ollama through http://127.0.0.1:1234 and local RAG context.",
+            f"Local LLM Panel ready in {self._operator_level()} mode. It can use Ollama through http://127.0.0.1:1234 and local RAG context.",
         )
+        self.start_auto_alert_monitor()
 
     def shutdown(self):
         self._stop_polling()
+        self._stop_auto_alert_monitor()
         if self._rebuild_task is not None:
             try:
                 self._rebuild_task.cancel()
@@ -99,12 +123,7 @@ class LocalLLMPanel:
         if self._interval_model is None:
             self._interval_model = ui.SimpleIntModel(int(self._config("LM_STUDIO_POLL_INTERVAL_SECONDS", 60)))
         if self._prompt_model is None:
-            self._prompt_model = ui.SimpleStringModel(
-                self._config(
-                    "LOCAL_LLM_DEFAULT_PROMPT",
-                    self._config("LM_STUDIO_DEFAULT_PROMPT", "You are connected to Aquacast. Give a concise status-style response."),
-                )
-            )
+            self._prompt_model = ui.SimpleStringModel(self._default_prompt())
 
         if self._proposal_backend_url_model is None:
             self._proposal_backend_url_model = ui.SimpleStringModel(
@@ -126,7 +145,7 @@ class LocalLLMPanel:
                         ui.StringField(self._server_url_model)
                         ui.Label("Model name. Leave empty to auto-detect first loaded model.")
                         ui.StringField(self._model_name_model)
-                        ui.Label("Prompt")
+                        ui.Label(f"Prompt ({self._operator_level()} mode)")
                         ui.StringField(self._prompt_model)
                         ui.Label("Interval seconds")
                         ui.IntField(self._interval_model)
@@ -196,6 +215,25 @@ class LocalLLMPanel:
         if self._task is None:
             self._running = False
 
+    def start_auto_alert_monitor(self):
+        if not self._truthy(self._config("ENABLE_LOCAL_LLM_AUTO_ALERT_PROPOSALS", True)):
+            return
+        if self._auto_alert_running:
+            return
+        self._auto_alert_running = True
+        self._auto_alert_task = self._schedule_task(self._auto_alert_loop())
+        if self._auto_alert_task is None:
+            self._auto_alert_running = False
+
+    def _stop_auto_alert_monitor(self):
+        self._auto_alert_running = False
+        if self._auto_alert_task is not None:
+            try:
+                self._auto_alert_task.cancel()
+            except Exception:
+                pass
+            self._auto_alert_task = None
+
     def _stop_polling(self):
         self._running = False
         if self._task is not None:
@@ -238,6 +276,58 @@ class LocalLLMPanel:
             raise
         finally:
             self._running = False
+
+    async def _auto_alert_loop(self):
+        try:
+            while self._auto_alert_running:
+                await self._auto_alert_check_once()
+                interval = float(self._config("LOCAL_LLM_AUTO_ALERT_CHECK_INTERVAL_SECONDS", 10.0) or 10.0)
+                await asyncio.sleep(max(2.0, interval))
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._auto_alert_running = False
+
+    async def _auto_alert_check_once(self):
+        try:
+            alerts = await asyncio.to_thread(self._collect_auto_alerts)
+        except Exception as exc:
+            self._append_message("Auto Alert", f"Auto alert scan failed: {exc}")
+            return
+        limit = int(self._config("LOCAL_LLM_AUTO_ALERT_MAX_PROPOSALS_PER_CHECK", 1) or 1)
+        for alert in alerts[: max(1, limit)]:
+            await self._run_auto_alert_proposal(alert)
+
+    async def _run_auto_alert_proposal(self, alert: dict):
+        signature = str(alert.get("signature") or "")
+        event_state_signature = str(alert.get("event_state_signature") or signature)
+        state_key = str(alert.get("state_key") or "")
+        self._auto_alert_attempts[event_state_signature] = time.monotonic()
+        try:
+            proposal = await asyncio.to_thread(
+                self._proposal_client().propose,
+                tank_id=alert.get("tank_path") or alert.get("tank_id"),
+                auto_alert=alert,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._append_message("API Error", f"Auto alert proposal failed: {exc}")
+            return
+
+        if state_key and signature:
+            self._auto_alert_state[state_key] = signature
+        proposal_id = str(proposal.get("proposal_id") or "")
+        if proposal_id:
+            self._proposals = [item for item in self._proposals if str(item.get("proposal_id") or "") != proposal_id]
+        self._proposals.insert(0, proposal)
+        self._proposal_status = f"Auto alert proposal ready: {proposal_id[:8] or '(no id)'}"
+        if self._window is None:
+            self.show()
+        else:
+            self._window.visible = True
+        self._append_message("Auto Alert", self._auto_alert_message(alert, proposal))
+        self._request_ui_rebuild()
 
     async def _run_once(self):
         prompt = self._model_string(self._prompt_model, "")
@@ -359,13 +449,7 @@ class LocalLLMPanel:
         prompt = self._prompt_with_rag(prompt)
         return client.chat(
             prompt,
-            system_prompt=self._config(
-                "LOCAL_LLM_SYSTEM_PROMPT",
-                self._config(
-                    "LM_STUDIO_SYSTEM_PROMPT",
-                    "You are a concise Aquacast aquaculture assistant. Use provided RAG context when relevant.",
-                ),
-            ),
+            system_prompt=self._llm_system_prompt(),
             temperature=float(self._config("LOCAL_LLM_TEMPERATURE", self._config("LM_STUDIO_TEMPERATURE", 0.7))),
             max_tokens=int(self._config("LOCAL_LLM_MAX_TOKENS", self._config("LM_STUDIO_MAX_TOKENS", 256))),
         )
@@ -520,13 +604,255 @@ class LocalLLMPanel:
                 f"could not read {url}: {exc}. Generate Proposal is still delegated to {proposal_url}."
             )
 
+    def _collect_auto_alerts(self) -> list[dict]:
+        if self._aquacast_main is None:
+            return []
+        if not hasattr(self._aquacast_main, "list_fish_tanks") or not hasattr(self._aquacast_main, "get_quality_snapshot"):
+            return []
+        thresholds = self._metric_thresholds()
+        if not thresholds:
+            return []
+        try:
+            tank_paths = list(self._aquacast_main.list_fish_tanks() or [])
+        except Exception:
+            return []
+        alerts = []
+        for tank_path in tank_paths:
+            try:
+                snapshot = self._aquacast_main.get_quality_snapshot(tank_path=tank_path)
+            except Exception:
+                continue
+            if not isinstance(snapshot, dict) or snapshot.get("status") != "ok":
+                continue
+            violations = self._threshold_violations(snapshot, thresholds)
+            tank_id = self._tank_id_from_path(str(tank_path)) or str(snapshot.get("tank_id") or "")
+            state_key = str(tank_id or tank_path)
+            if not violations:
+                self._auto_alert_state.pop(state_key, None)
+                continue
+            signature = self._auto_alert_signature(state_key, violations)
+            event_state_signature = self._auto_alert_event_state_signature(state_key, violations)
+            if self._auto_alert_state.get(state_key) == signature:
+                continue
+            if self._auto_alert_cooldown_suppressed(event_state_signature):
+                continue
+            severity = "critical" if any(item.get("band_state") == "critical" for item in violations) else "warning"
+            alerts.append(
+                {
+                    "source": "aquacast_local_llm_panel",
+                    "event_type": "auto_threshold_violation",
+                    "severity": severity,
+                    "state_key": state_key,
+                    "signature": signature,
+                    "event_state_signature": event_state_signature,
+                    "tank_id": tank_id,
+                    "tank_path": str(tank_path or snapshot.get("tank_path") or ""),
+                    "violated_parameter_names": [item["parameter"] for item in violations],
+                    "violations": violations,
+                    "latest_sensor": self._auto_alert_sensor_snapshot(snapshot),
+                    "operator_prompt": self._auto_alert_operator_prompt(tank_id or str(tank_path), severity, violations),
+                }
+            )
+        return alerts
+
+    def _metric_thresholds(self) -> dict:
+        if self._aquacast_main is not None and hasattr(self._aquacast_main, "get_water_quality_metric_thresholds"):
+            try:
+                result = self._aquacast_main.get_water_quality_metric_thresholds()
+                if isinstance(result, dict) and result.get("status") == "ok" and isinstance(result.get("thresholds"), dict):
+                    return dict(result.get("thresholds") or {})
+            except Exception:
+                pass
+        configured = self._config("WQ_METRIC_DASHBOARD_THRESHOLDS", {})
+        return dict(configured or {}) if isinstance(configured, dict) else {}
+
+    def _threshold_violations(self, snapshot: dict, thresholds: dict) -> list[dict]:
+        violations = []
+        for parameter, bands in sorted(thresholds.items()):
+            if not isinstance(bands, dict) or parameter not in snapshot:
+                continue
+            value = self._float_or_none(snapshot.get(parameter))
+            if value is None:
+                continue
+            state, condition = self._metric_band_state(value, bands)
+            if state not in {"warn", "critical"}:
+                continue
+            violations.append(
+                {
+                    "parameter": str(parameter),
+                    "label": self._metric_label(parameter),
+                    "value": value,
+                    "unit": self._metric_unit(parameter),
+                    "band_state": state,
+                    "threshold": dict(condition),
+                    "condition": self._condition_label(condition),
+                }
+            )
+        return violations
+
+    def _metric_band_state(self, value: float, bands: dict) -> tuple[str, dict]:
+        for state in ("critical", "warn", "healthy"):
+            for condition in self._conditions_for_state(bands, state):
+                if self._condition_matches(value, condition):
+                    return state, condition
+        return "unknown", {}
+
+    @staticmethod
+    def _conditions_for_state(bands: dict, state: str) -> list[dict]:
+        raw = bands.get(state, []) if isinstance(bands, dict) else []
+        if isinstance(raw, dict):
+            raw = [raw]
+        return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+    @staticmethod
+    def _condition_matches(value: float, condition: dict) -> bool:
+        checks = (
+            ("lt", lambda actual, limit: actual < limit),
+            ("lte", lambda actual, limit: actual <= limit),
+            ("gt", lambda actual, limit: actual > limit),
+            ("gte", lambda actual, limit: actual >= limit),
+        )
+        for key, predicate in checks:
+            limit = LocalLLMPanel._float_or_none(condition.get(key))
+            if limit is not None and not predicate(value, limit):
+                return False
+        return True
+
+    @staticmethod
+    def _condition_label(condition: dict) -> str:
+        lower_key = "gte" if "gte" in condition else "gt" if "gt" in condition else ""
+        upper_key = "lte" if "lte" in condition else "lt" if "lt" in condition else ""
+        if lower_key and upper_key:
+            lower_op = ">=" if lower_key == "gte" else ">"
+            upper_op = "<=" if upper_key == "lte" else "<"
+            return f"{lower_op}{condition[lower_key]:g} and {upper_op}{condition[upper_key]:g}"
+        if lower_key:
+            lower_op = ">=" if lower_key == "gte" else ">"
+            return f"{lower_op}{condition[lower_key]:g}"
+        if upper_key:
+            upper_op = "<=" if upper_key == "lte" else "<"
+            return f"{upper_op}{condition[upper_key]:g}"
+        return "any"
+
+    @staticmethod
+    def _auto_alert_signature(state_key: str, violations: list[dict]) -> str:
+        parts = [
+            f"{item.get('parameter')}:{item.get('band_state')}:{item.get('condition')}"
+            for item in violations
+        ]
+        return f"{state_key}|" + ",".join(sorted(parts))
+
+    @staticmethod
+    def _auto_alert_event_state_signature(state_key: str, violations: list[dict]) -> str:
+        parts = [
+            f"{item.get('parameter')}:{item.get('band_state')}"
+            for item in violations
+        ]
+        return f"{state_key}|" + ",".join(sorted(parts))
+
+    def _auto_alert_cooldown_suppressed(self, event_state_signature: str) -> bool:
+        previous = self._auto_alert_attempts.get(event_state_signature)
+        if previous is None:
+            return False
+        cooldown_s = float(
+            self._config(
+                "LOCAL_LLM_AUTO_ALERT_SAME_EVENT_COOLDOWN_SECONDS",
+                self._config("LOCAL_LLM_AUTO_ALERT_RETRY_SECONDS", 60.0),
+            )
+            or 60.0
+        )
+        return time.monotonic() - float(previous) < max(1.0, cooldown_s)
+
+    @staticmethod
+    def _auto_alert_sensor_snapshot(snapshot: dict) -> dict:
+        keys = (
+            "temperature_c",
+            "dissolved_oxygen_mg_l",
+            "tan_mg_l",
+            "nh3_mg_l",
+            "ph",
+            "co2_mg_l",
+            "alkalinity_mg_l_as_caco3",
+            "salinity_ppt",
+            "turbidity_ntu",
+            "nitrite_mg_l",
+            "nitrate_mg_l",
+            "inflow_enabled",
+            "biofilter_on",
+            "mechanical_filter_on",
+            "heater_power_w",
+            "flow_lph",
+            "q_makeup_lph",
+            "inlet_temp_c",
+        )
+        return {key: snapshot.get(key) for key in keys if key in snapshot}
+
+    @staticmethod
+    def _metric_label(parameter: str) -> str:
+        labels = {
+            "temperature_c": "temperature",
+            "dissolved_oxygen_mg_l": "dissolved oxygen",
+            "tan_mg_l": "total ammonia nitrogen",
+            "nh3_mg_l": "unionized ammonia",
+            "ph": "pH",
+            "co2_mg_l": "carbon dioxide",
+            "alkalinity_mg_l_as_caco3": "alkalinity",
+            "salinity_ppt": "salinity",
+            "turbidity_ntu": "turbidity",
+            "nitrite_mg_l": "nitrite",
+            "nitrate_mg_l": "nitrate",
+        }
+        return labels.get(str(parameter), str(parameter))
+
+    @staticmethod
+    def _metric_unit(parameter: str) -> str:
+        units = {
+            "temperature_c": "C",
+            "dissolved_oxygen_mg_l": "mg/L",
+            "tan_mg_l": "mg/L",
+            "nh3_mg_l": "mg/L",
+            "co2_mg_l": "mg/L",
+            "alkalinity_mg_l_as_caco3": "mg/L as CaCO3",
+            "salinity_ppt": "ppt",
+            "turbidity_ntu": "NTU",
+            "nitrite_mg_l": "mg/L",
+            "nitrate_mg_l": "mg/L",
+        }
+        return units.get(str(parameter), "")
+
+    def _auto_alert_operator_prompt(self, tank: str, severity: str, violations: list[dict]) -> str:
+        reasons = "; ".join(
+            f"{item.get('label')}={self._short_value(item.get('value'))}{item.get('unit', '')} is {item.get('band_state')} because condition is {item.get('condition')}"
+            for item in violations
+        )
+        return (
+            f"Tank {tank} is currently {severity}. Explain why this state is {severity} using the measured value and threshold condition, "
+            f"then propose safe corrective actions that require operator confirmation. Evidence: {reasons}."
+        )
+
+    def _auto_alert_message(self, alert: dict, proposal: dict) -> str:
+        proposal_id = str(proposal.get("proposal_id") or "")
+        reason = "; ".join(
+            f"{item.get('parameter')}={self._short_value(item.get('value'))} {item.get('band_state')} ({item.get('condition')})"
+            for item in alert.get("violations") or []
+        )
+        return f"{str(alert.get('severity')).upper()} auto alert created proposal {proposal_id[:8]} for {alert.get('tank_id') or alert.get('tank_path')}: {reason}"
+
+    @staticmethod
+    def _float_or_none(value) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     def _prompt_with_rag(self, prompt: str) -> str:
         context_parts = []
+        profile_instruction = self._profile_context_instruction()
         if self._truthy(self._config("LOCAL_LLM_INCLUDE_WQ_DB_CONTEXT", True)):
             context_parts.append(self._water_quality_db_context())
         if not self._truthy(self._config("ENABLE_LOCAL_LLM_RAG", True)):
             context = "\n\n".join(part for part in context_parts if part)
-            return f"{prompt}\n\n{context}" if context else prompt
+            return f"{prompt}\n\n{profile_instruction}\n\n{context}" if context else f"{prompt}\n\n{profile_instruction}"
         context_parts.append(
             build_rag_context(
                 prompt,
@@ -538,6 +864,7 @@ class LocalLLMPanel:
         context = "\n\n".join(part for part in context_parts if part)
         return (
             f"{prompt}\n\n"
+            f"{profile_instruction}\n\n"
             "Use the following local SQLite/RAG context if it is relevant. "
             "If the context is insufficient, say what is missing instead of inventing data.\n\n"
             f"{context}"
@@ -553,7 +880,8 @@ class LocalLLMPanel:
             }
         )
         url = f"{backend_url}/llm-context?{params}"
-        max_chars = int(self._config("LOCAL_LLM_WQ_CONTEXT_MAX_CHARS", 5000) or 5000)
+        default_max_chars = 2500 if self._operator_level() == "beginner" else 5000
+        max_chars = int(self._config("LOCAL_LLM_WQ_CONTEXT_MAX_CHARS", default_max_chars) or default_max_chars)
         try:
             request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
             with urllib.request.urlopen(request, timeout=5.0) as response:
@@ -645,13 +973,16 @@ class LocalLLMPanel:
             return f"Target tank: {tank_id or '(unknown)'} | {tank_path or '(no path)'}"
         return "Target tank: not specified"
 
-    @staticmethod
-    def _proposal_evidence_text(proposal: dict) -> str:
+    def _proposal_evidence_text(self, proposal: dict) -> str:
         evidence = proposal.get("context_evidence") if isinstance(proposal.get("context_evidence"), dict) else {}
         latest = evidence.get("latest_sensor") if isinstance(evidence.get("latest_sensor"), dict) else {}
         thresholds = evidence.get("threshold_reference") if isinstance(evidence.get("threshold_reference"), dict) else {}
         rag = proposal.get("rag_status") if isinstance(proposal.get("rag_status"), dict) else {}
+        expert = self._operator_level() == "expert"
         temp = latest.get("temperature_c", latest.get("temperature"))
+        do_value = latest.get("DO", latest.get("dissolved_oxygen_mg_l"))
+        tan = latest.get("TAN", latest.get("tan_mg_l"))
+        nh3 = latest.get("ammonia", latest.get("nh3_mg_l"))
         ph = latest.get("pH", latest.get("ph"))
         temp_threshold = thresholds.get("temperature_c") if isinstance(thresholds.get("temperature_c"), dict) else {}
         rag_mode = str(rag.get("mode") or "unknown")
@@ -659,11 +990,17 @@ class LocalLLMPanel:
         parts = []
         if temp is not None:
             parts.append(f"T={LocalLLMPanel._short_value(temp)}C")
+        if do_value is not None:
+            parts.append(f"DO={LocalLLMPanel._short_value(do_value)}")
         if ph is not None:
             parts.append(f"pH={LocalLLMPanel._short_value(ph)}")
-        if temp_threshold:
+        if expert and tan is not None:
+            parts.append(f"TAN={LocalLLMPanel._short_value(tan)}")
+        if nh3 is not None:
+            parts.append(f"NH3={LocalLLMPanel._short_value(nh3)}")
+        if expert and temp_threshold:
             parts.append(f"temp bands={temp_threshold}")
-        parts.append(f"RAG={rag_mode}/{rag_note}")
+        parts.append(f"RAG={rag_mode}/{rag_note}" if expert else f"mode={self._operator_level()}")
         return "Evidence: " + " | ".join(str(part) for part in parts)
 
     @staticmethod
@@ -687,6 +1024,31 @@ class LocalLLMPanel:
 
     def _config(self, name: str, default=None):
         return self._config_getter(name, default)
+
+    def _operator_level(self) -> str:
+        raw = self._config("AQUACAST_OPERATOR_LEVEL", self._config("OPERATOR_LEVEL", "beginner"))
+        return "expert" if str(raw or "").strip().lower() == "expert" else "beginner"
+
+    def _default_prompt(self) -> str:
+        configured = self._config_text("LOCAL_LLM_DEFAULT_PROMPT")
+        if configured:
+            return configured
+        return self._EXPERT_DEFAULT_PROMPT if self._operator_level() == "expert" else self._BEGINNER_DEFAULT_PROMPT
+
+    def _llm_system_prompt(self) -> str:
+        base = self._config_text("LOCAL_LLM_SYSTEM_PROMPT") or self._config_text("LM_STUDIO_SYSTEM_PROMPT")
+        if not base:
+            base = "You are a concise Aquacast aquaculture assistant. Use provided RAG context when relevant."
+        return f"{base}\n\n{self._profile_context_instruction()}"
+
+    def _profile_context_instruction(self) -> str:
+        if self._operator_level() == "expert":
+            return self._EXPERT_SYSTEM_INSTRUCTION
+        return self._BEGINNER_SYSTEM_INSTRUCTION
+
+    def _config_text(self, name: str) -> str:
+        value = self._config(name, "")
+        return str(value or "").strip()
 
     @staticmethod
     def _safe_int(model, default: int) -> int:
