@@ -2,10 +2,12 @@
 set -euo pipefail
 
 # 기본값 설정
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
 NO_WINDOW=""
 KIT_FILE="aquacast.aquacast_composer_streaming"
-APP_ROOT="${HOME}/cs-project/kit-app-template"
-EXT_FOLDER="${HOME}/cs-project/Aquacast/extensions"
+APP_ROOT="${PROJECT_ROOT}/kit-app-template"
+EXT_FOLDER="${SCRIPT_DIR}/extensions"
 EXT_ID="aquacast.aquacast_composer"
 
 # 인자값(Arguments) 처리
