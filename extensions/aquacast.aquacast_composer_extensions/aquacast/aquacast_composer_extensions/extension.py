@@ -192,6 +192,29 @@ class CreateSetupExtension(omni.ext.IExt):
         "off": {"background_color": 0xFFE53935, "border_radius": 6},
         "unknown": {"background_color": 0xFF808080, "border_radius": 6},
     }
+    _WQ_VIEW_VARIABLE_SPECS = {
+        "temperature": {"label": "Temperature", "short": "Temp", "unit": "C", "snapshot_keys": ("temperature_c", "temperature")},
+        "dissolved_oxygen": {"label": "Dissolved O2", "short": "DO", "unit": "mg/L", "snapshot_keys": ("dissolved_oxygen_mg_l", "do_mg_l", "dissolved_oxygen")},
+        "tan": {"label": "TAN", "short": "TAN", "unit": "mg/L", "snapshot_keys": ("tan_mg_l", "tan")},
+        "co2": {"label": "CO2", "short": "CO2", "unit": "mg/L", "snapshot_keys": ("co2_mg_l", "co2")},
+        "ph": {"label": "pH", "short": "pH", "unit": "", "snapshot_keys": ("ph", "pH")},
+        "alkalinity": {"label": "Alkalinity", "short": "Alk", "unit": "mg/L as CaCO3", "snapshot_keys": ("alkalinity_mg_l_as_caco3", "alkalinity")},
+        "salinity": {"label": "Salinity", "short": "Sal", "unit": "ppt", "snapshot_keys": ("salinity_ppt", "salinity")},
+        "turbidity": {"label": "Turbidity", "short": "Turb", "unit": "NTU", "snapshot_keys": ("turbidity_ntu", "turbidity")},
+        "nh3": {"label": "NH3", "short": "NH3", "unit": "mg/L", "snapshot_keys": ("nh3_mg_l", "nh3")},
+    }
+    _WQ_VIEW_COLOR_CONFIGS = {
+        "temperature": "TEMP_COLOR_STOPS",
+        "dissolved_oxygen": "DO_COLOR_STOPS",
+        "tan": "TAN_COLOR_STOPS",
+        "co2": "CO2_COLOR_STOPS",
+        "ph": "PH_COLOR_STOPS",
+        "alkalinity": "ALK_COLOR_STOPS",
+        "salinity": "SALINITY_COLOR_STOPS",
+        "turbidity": "TURBIDITY_COLOR_STOPS",
+        "nh3": "NH3_COLOR_STOPS",
+    }
+    _WQ_VIEW_LEGEND_SEGMENTS = 32
     _METRIC_DASHBOARD_SPECS = (
         {
             "key": "temperature_c",
@@ -377,6 +400,10 @@ class CreateSetupExtension(omni.ext.IExt):
         self._sensor_menu_items = []
         self._wq_view_window = None
         self._wq_view_label = None
+        self._wq_view_value_label = None
+        self._wq_view_legend_frame = None
+        self._wq_view_update_sub = None
+        self._wq_view_last_update = 0.0
         self._wq_view_menu_items = []
         self._control_window = None
         self._control_menu_items = []
@@ -1089,7 +1116,7 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._wq_view_window is not None:
             return
 
-        self._wq_view_window = ui.Window("Aquacast Water Quality View", width=300, height=220, visible=True)
+        self._wq_view_window = ui.Window("Aquacast Water Quality View", width=430, height=360, visible=True)
         with self._wq_view_window.frame:
             with ui.ScrollingFrame():
                 with ui.VStack(spacing=6):
@@ -1106,8 +1133,16 @@ class CreateSetupExtension(omni.ext.IExt):
                         ui.Button("NH3", clicked_fn=lambda: self._select_wq_view_variable("nh3"))
                         ui.Button("Sal", clicked_fn=lambda: self._select_wq_view_variable("salinity"))
                         ui.Button("Turb", clicked_fn=lambda: self._select_wq_view_variable("turbidity"))
+                    ui.Separator()
+                    ui.Label("Color Scale", height=20)
+                    self._wq_view_value_label = ui.Label("Current value: --", height=22, word_wrap=True)
+                    self._wq_view_legend_frame = ui.Frame(height=138)
 
         self._register_wq_view_window_menu()
+        self._wq_view_update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+            self._on_wq_view_ui_update,
+            name="aquacast_wq_view_ui",
+        )
         self._refresh_wq_view_label()
 
     def _register_wq_view_window_menu(self):
@@ -1128,6 +1163,21 @@ class CreateSetupExtension(omni.ext.IExt):
         self._wq_view_window.visible = True
         self._refresh_wq_view_label()
 
+    def _on_wq_view_ui_update(self, _event, force=False):
+        if self._wq_view_window is None:
+            return
+        try:
+            if not self._wq_view_window.visible:
+                return
+        except Exception:
+            pass
+        now = time.monotonic()
+        interval = float(_get_runtime_config("TEMP_SENSOR_UPDATE_INTERVAL_SECONDS", 0.5) or 0.5)
+        if not force and now - self._wq_view_last_update < max(0.1, interval):
+            return
+        self._wq_view_last_update = now
+        self._refresh_wq_view_label()
+
     def _select_wq_view_variable(self, variable):
         if self._aquacast_main and hasattr(self._aquacast_main, "set_quality_view_variable"):
             self._aquacast_main.set_quality_view_variable(variable)
@@ -1137,6 +1187,7 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._wq_view_label is None:
             return
         variable = fallback
+        snapshot = {}
         if self._aquacast_main and hasattr(self._aquacast_main, "get_quality_snapshot"):
             try:
                 snapshot = self._aquacast_main.get_quality_snapshot()
@@ -1144,18 +1195,141 @@ class CreateSetupExtension(omni.ext.IExt):
                     variable = snapshot.get("view_variable", variable)
             except Exception:
                 pass
-        label = {
-            "temperature": "Temperature",
-            "dissolved_oxygen": "Dissolved O2",
-            "tan": "TAN",
-            "co2": "CO2",
-            "ph": "pH",
-            "alkalinity": "Alkalinity",
-            "salinity": "Salinity",
-            "turbidity": "Turbidity",
-            "nh3": "NH3",
-        }.get(str(variable or ""), str(variable or "--"))
+        variable = self._normalize_wq_view_variable(variable)
+        label = self._wq_view_spec(variable).get("label", str(variable or "--"))
         self._wq_view_label.text = f"Current: {label}"
+        self._refresh_wq_view_legend(variable, snapshot)
+
+    def _normalize_wq_view_variable(self, variable):
+        value = str(variable or "temperature").strip().lower()
+        aliases = {
+            "do": "dissolved_oxygen",
+            "dissolved_o2": "dissolved_oxygen",
+            "oxygen": "dissolved_oxygen",
+            "alk": "alkalinity",
+            "salt": "salinity",
+            "salinity_ppt": "salinity",
+            "turbidity_ntu": "turbidity",
+        }
+        value = aliases.get(value, value)
+        return value if value in self._WQ_VIEW_VARIABLE_SPECS else "temperature"
+
+    def _wq_view_spec(self, variable):
+        return self._WQ_VIEW_VARIABLE_SPECS.get(variable, self._WQ_VIEW_VARIABLE_SPECS["temperature"])
+
+    def _wq_view_color_stops(self, variable):
+        config_name = self._WQ_VIEW_COLOR_CONFIGS.get(variable, "TEMP_COLOR_STOPS")
+        raw_stops = _get_runtime_config(config_name, []) or []
+        stops = []
+        for item in raw_stops:
+            try:
+                value, color = item
+                r, g, b = color
+                stops.append((float(value), (float(r), float(g), float(b))))
+            except Exception:
+                continue
+        return sorted(stops, key=lambda stop: stop[0])
+
+    def _refresh_wq_view_legend(self, variable, snapshot):
+        if self._wq_view_legend_frame is None:
+            return
+        spec = self._wq_view_spec(variable)
+        stops = self._wq_view_color_stops(variable)
+        current = self._wq_view_current_value(spec, snapshot)
+        if self._wq_view_value_label is not None:
+            if current is None:
+                self._wq_view_value_label.text = "Current value: --"
+            else:
+                self._wq_view_value_label.text = f"Current value: {self._format_wq_view_value(current, spec)}"
+        with self._wq_view_legend_frame:
+            if not stops:
+                ui.Label("Color stops unavailable", height=24)
+                return
+            min_value = stops[0][0]
+            max_value = stops[-1][0]
+            current_bin = self._wq_view_color_bin(current, min_value, max_value) if current is not None else None
+            with ui.VStack(spacing=4):
+                with ui.HStack(height=26, spacing=0):
+                    for color in self._sample_wq_view_colors(stops, self._WQ_VIEW_LEGEND_SEGMENTS):
+                        ui.Rectangle(width=11, height=24, style={"background_color": self._ui_color_from_rgb(color)})
+                with ui.HStack(height=22):
+                    ui.Label(self._format_wq_view_value(min_value, spec), width=128)
+                    ui.Label("min -> max", alignment=ui.Alignment.CENTER, width=126)
+                    ui.Label(self._format_wq_view_value(max_value, spec), alignment=ui.Alignment.RIGHT, width=128)
+                bin_text = f"Current color bin: {current_bin}/{self._WQ_VIEW_LEGEND_SEGMENTS}" if current_bin else "Current color bin: --"
+                with ui.HStack(height=22, spacing=6):
+                    ui.Label(bin_text, width=220)
+                    if current is not None:
+                        current_color = self._wq_view_color_for_value(float(current), stops)
+                        ui.Rectangle(width=40, height=18, style={"background_color": self._ui_color_from_rgb(current_color)})
+                    else:
+                        ui.Label("color --", width=72)
+                ui.Label("Stops: " + " | ".join(self._format_wq_view_value(value, spec) for value, _color in stops), height=42, word_wrap=True)
+
+    def _wq_view_current_value(self, spec, snapshot):
+        if not isinstance(snapshot, dict) or snapshot.get("status") != "ok":
+            return None
+        for key in spec.get("snapshot_keys", ()):
+            if key not in snapshot:
+                continue
+            try:
+                return float(snapshot.get(key))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _format_wq_view_value(self, value, spec):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return "--"
+        unit = str(spec.get("unit") or "")
+        if spec.get("short") in ("pH", "NH3", "TAN"):
+            text = f"{numeric:.3g}"
+        else:
+            text = f"{numeric:.2f}"
+        return f"{text} {unit}".strip()
+
+    def _wq_view_color_bin(self, value, min_value, max_value):
+        try:
+            span = float(max_value) - float(min_value)
+            if span <= 0.0:
+                return 1
+            normalized = (float(value) - float(min_value)) / span
+        except (TypeError, ValueError):
+            return None
+        normalized = max(0.0, min(1.0, normalized))
+        return int(normalized * (self._WQ_VIEW_LEGEND_SEGMENTS - 1)) + 1
+
+    def _sample_wq_view_colors(self, stops, count):
+        if not stops:
+            return []
+        if count <= 1:
+            return [stops[0][1]]
+        min_value = stops[0][0]
+        max_value = stops[-1][0]
+        span = max(1e-9, max_value - min_value)
+        return [self._wq_view_color_for_value(min_value + span * index / float(count - 1), stops) for index in range(count)]
+
+    def _wq_view_color_for_value(self, value, stops):
+        if value <= stops[0][0]:
+            return stops[0][1]
+        if value >= stops[-1][0]:
+            return stops[-1][1]
+        for (low_value, low_color), (high_value, high_color) in zip(stops, stops[1:]):
+            if low_value <= value <= high_value:
+                span = max(1e-9, high_value - low_value)
+                alpha = (value - low_value) / span
+                return tuple(low_color[channel] + (high_color[channel] - low_color[channel]) * alpha for channel in range(3))
+        return stops[-1][1]
+
+    def _ui_color_from_rgb(self, color):
+        r, g, b = color
+        red = max(0, min(255, int(round(float(r) * 255.0))))
+        green = max(0, min(255, int(round(float(g) * 255.0))))
+        blue = max(0, min(255, int(round(float(b) * 255.0))))
+        # Sampled RGB colors for omni.ui background_color render correctly as 0xAABBGGRR.
+        return (255 << 24) | (blue << 16) | (green << 8) | red
 
 
     def _create_control_window(self):
@@ -2671,10 +2845,14 @@ class CreateSetupExtension(omni.ext.IExt):
             self._aquacast_main = None
         self._sub_fabric_delegate_changed = None
         self._sensor_update_sub = None
+        self._wq_view_update_sub = None
         self._actuator_update_sub = None
         self._metrics_update_sub = None
         self._sensor_window = None
         self._wq_view_window = None
+        self._wq_view_label = None
+        self._wq_view_value_label = None
+        self._wq_view_legend_frame = None
         self._control_window = None
         self._tutorial_window = None
         self._actuator_window = None

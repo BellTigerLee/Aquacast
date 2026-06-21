@@ -72,6 +72,11 @@ class LocalLLMPanel:
         self._window = None
         self._running = False
         self._task = None
+        self._llm_status_task = None
+        self._llm_connection_state = "unknown"
+        self._llm_connection_detail = "Not checked yet."
+        self._auto_alert_enabled = self._truthy(self._config("ENABLE_LOCAL_LLM_AUTO_ALERT_PROPOSALS", True))
+        self._auto_execute_enabled = self._truthy(self._config("ENABLE_LOCAL_LLM_AUTO_ALERT_AUTO_EXECUTE", True))
         self._auto_alert_running = False
         self._auto_alert_task = None
         self._auto_alert_state = {}
@@ -95,11 +100,19 @@ class LocalLLMPanel:
             "System",
             f"Local LLM Panel ready in {self._operator_level()} mode. It can use Ollama through http://127.0.0.1:1234 and local RAG context.",
         )
+        if self._llm_connection_state == "unknown":
+            self._start_llm_status_check(silent=True)
         self.start_auto_alert_monitor()
 
     def shutdown(self):
         self._stop_polling()
         self._stop_auto_alert_monitor()
+        if self._llm_status_task is not None:
+            try:
+                self._llm_status_task.cancel()
+            except Exception:
+                pass
+            self._llm_status_task = None
         if self._rebuild_task is not None:
             try:
                 self._rebuild_task.cancel()
@@ -149,19 +162,17 @@ class LocalLLMPanel:
                         ui.StringField(self._prompt_model)
                         ui.Label("Interval seconds")
                         ui.IntField(self._interval_model)
+                        ui.Label(self._llm_status_text(), word_wrap=True, height=44)
 
                     with ui.HStack(height=36, spacing=8):
                         ui.Button("Start", clicked_fn=self._start_polling)
                         ui.Button("Stop", clicked_fn=self._stop_polling)
                         ui.Button("Run Once", clicked_fn=self._run_once_clicked)
+                        ui.Button("Check LLM", clicked_fn=self._check_llm_status_clicked)
                         ui.Button("Clear", clicked_fn=self._clear_messages)
 
                     ui.Separator()
                     self._build_proposal_inbox()
-                    ui.Separator()
-                    ui.Label("Latest Log", height=22)
-                    with ui.ScrollingFrame(height=170):
-                        ui.Label(self._latest_log_text(), word_wrap=True)
                     ui.Separator()
                     ui.Label("Omniverse Console", height=22)
                     ui.Label(
@@ -175,10 +186,18 @@ class LocalLLMPanel:
         ui.Label("AI Proposal Inbox", height=24)
         ui.Label("Dashboard backend URL", height=20)
         ui.StringField(self._proposal_backend_url_model)
+        ui.Label(self._auto_alert_status_text(), word_wrap=True, height=44)
+        with ui.HStack(height=34, spacing=8):
+            ui.Button("Auto Proposal ON", clicked_fn=self._enable_auto_alert_monitor)
+            ui.Button("Auto Proposal OFF", clicked_fn=self._disable_auto_alert_monitor)
+        with ui.HStack(height=34, spacing=8):
+            ui.Button("Auto Execute ON", clicked_fn=self._enable_auto_execute)
+            ui.Button("Auto Execute OFF", clicked_fn=self._disable_auto_execute)
         with ui.HStack(height=34, spacing=8):
             ui.Button("Generate Proposal", clicked_fn=self._generate_proposal_clicked)
             ui.Button("Refresh Pending", clicked_fn=self._refresh_proposals_clicked)
             ui.Button("Refresh Recent", clicked_fn=self._refresh_recent_proposals_clicked)
+            ui.Button("Clear Completed", clicked_fn=self._clear_completed_proposals_clicked)
         ui.Label(str(self._proposal_status), word_wrap=True, height=44)
         with ui.ScrollingFrame(height=230):
             with ui.VStack(spacing=8):
@@ -204,6 +223,9 @@ class LocalLLMPanel:
                 with ui.HStack(height=30, spacing=8):
                     ui.Button("Confirm", clicked_fn=lambda pid=proposal_id: self._confirm_proposal_clicked(pid))
                     ui.Button("Reject", clicked_fn=lambda pid=proposal_id: self._reject_proposal_clicked(pid))
+            elif proposal_id:
+                with ui.HStack(height=30, spacing=8):
+                    ui.Button("Delete", clicked_fn=lambda pid=proposal_id: self._delete_completed_proposal_clicked(pid))
 
     def _start_polling(self):
         if self._running:
@@ -216,7 +238,7 @@ class LocalLLMPanel:
             self._running = False
 
     def start_auto_alert_monitor(self):
-        if not self._truthy(self._config("ENABLE_LOCAL_LLM_AUTO_ALERT_PROPOSALS", True)):
+        if not self._auto_alert_enabled:
             return
         if self._auto_alert_running:
             return
@@ -224,6 +246,40 @@ class LocalLLMPanel:
         self._auto_alert_task = self._schedule_task(self._auto_alert_loop())
         if self._auto_alert_task is None:
             self._auto_alert_running = False
+
+    def _enable_auto_alert_monitor(self):
+        if self._auto_alert_enabled and self._auto_alert_running:
+            self._append_message("Auto Alert", "Auto proposal monitor is already ON.")
+            return
+        self._auto_alert_enabled = True
+        self._append_message("Auto Alert", "Auto proposal monitor turned ON.")
+        self.start_auto_alert_monitor()
+        self._request_ui_rebuild()
+
+    def _disable_auto_alert_monitor(self):
+        if not self._auto_alert_enabled and not self._auto_alert_running:
+            self._append_message("Auto Alert", "Auto proposal monitor is already OFF.")
+            return
+        self._auto_alert_enabled = False
+        self._stop_auto_alert_monitor()
+        self._append_message("Auto Alert", "Auto proposal monitor turned OFF.")
+        self._request_ui_rebuild()
+
+    def _enable_auto_execute(self):
+        if self._auto_execute_enabled:
+            self._append_message("Auto Alert", "Auto execute is already ON.")
+            return
+        self._auto_execute_enabled = True
+        self._append_message("Auto Alert", "Auto execute turned ON. Future auto proposals will be applied immediately.")
+        self._request_ui_rebuild()
+
+    def _disable_auto_execute(self):
+        if not self._auto_execute_enabled:
+            self._append_message("Auto Alert", "Auto execute is already OFF.")
+            return
+        self._auto_execute_enabled = False
+        self._append_message("Auto Alert", "Auto execute turned OFF. Future auto proposals will stay pending for Confirm/Reject.")
+        self._request_ui_rebuild()
 
     def _stop_auto_alert_monitor(self):
         self._auto_alert_running = False
@@ -233,6 +289,13 @@ class LocalLLMPanel:
             except Exception:
                 pass
             self._auto_alert_task = None
+
+    def _auto_alert_status_text(self) -> str:
+        enabled = "ON" if self._auto_alert_enabled else "OFF"
+        running = "running" if self._auto_alert_running else "stopped"
+        auto_execute = "ON" if self._auto_execute_enabled else "OFF"
+        interval = self._config("LOCAL_LLM_AUTO_ALERT_CHECK_INTERVAL_SECONDS", 10.0)
+        return f"Auto Proposal: {enabled} ({running}) | Auto Execute: {auto_execute} | Check interval: {interval}s"
 
     def _stop_polling(self):
         self._running = False
@@ -254,6 +317,12 @@ class LocalLLMPanel:
     def _refresh_recent_proposals_clicked(self):
         self._schedule_task(self._refresh_proposals(pending_only=False))
 
+    def _clear_completed_proposals_clicked(self):
+        self._schedule_task(self._clear_completed_proposals())
+
+    def _delete_completed_proposal_clicked(self, proposal_id: str):
+        self._schedule_task(self._delete_completed_proposal(proposal_id))
+
     def _generate_proposal_clicked(self):
         self._schedule_task(self._generate_proposal())
 
@@ -266,6 +335,65 @@ class LocalLLMPanel:
     def _clear_messages(self):
         self._messages.clear()
         self._request_ui_rebuild()
+
+    def _check_llm_status_clicked(self):
+        self._start_llm_status_check(silent=False)
+
+    def _start_llm_status_check(self, *, silent: bool):
+        if self._llm_status_task is not None:
+            if not silent:
+                self._append_message("System", "LLM status check is already running.")
+            return
+        self._llm_connection_state = "checking"
+        self._llm_connection_detail = "Checking local LLM server..."
+        self._request_ui_rebuild()
+        task = self._schedule_task(self._check_llm_status(silent=silent))
+        self._llm_status_task = task
+        if task is None:
+            self._llm_connection_state = "off"
+            self._llm_connection_detail = "Could not schedule status check."
+            self._request_ui_rebuild()
+            return
+        try:
+            task.add_done_callback(lambda _task: setattr(self, "_llm_status_task", None))
+        except Exception:
+            pass
+
+    async def _check_llm_status(self, *, silent: bool):
+        try:
+            detail = await asyncio.to_thread(self._llm_connection_check)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._llm_connection_state = "off"
+            self._llm_connection_detail = str(exc)
+            if not silent:
+                self._append_message("System", f"LLM OFF: {exc}")
+            else:
+                self._request_ui_rebuild()
+            return
+        self._llm_connection_state = "on"
+        self._llm_connection_detail = detail
+        if not silent:
+            self._append_message("System", f"LLM ON: {detail}")
+        else:
+            self._request_ui_rebuild()
+
+    def _llm_connection_check(self) -> str:
+        client = self._llm_client(timeout_s=float(self._config("LOCAL_LLM_STATUS_TIMEOUT_SECONDS", 5.0) or 5.0))
+        discovered_model = client.first_model()
+        configured_model = self._model_string(self._model_name_model, self._config("LOCAL_LLM_MODEL_NAME", ""))
+        model = configured_model or discovered_model
+        provider = "Ollama" if str(self._config("LOCAL_LLM_PROVIDER", "ollama")).strip().lower() == "ollama" else "OpenAI-compatible"
+        return f"{provider} reachable at {client.base_url}; model={model}"
+
+    def _llm_status_text(self) -> str:
+        label = {
+            "on": "LLM: ON",
+            "off": "LLM: OFF",
+            "checking": "LLM: CHECKING",
+        }.get(str(self._llm_connection_state), "LLM: UNKNOWN")
+        return f"{label}\n{self._llm_connection_detail}"
 
     async def _poll_loop(self):
         try:
@@ -308,6 +436,7 @@ class LocalLLMPanel:
                 self._proposal_client().propose,
                 tank_id=alert.get("tank_path") or alert.get("tank_id"),
                 auto_alert=alert,
+                auto_execute=self._auto_execute_enabled,
             )
         except asyncio.CancelledError:
             raise
@@ -327,7 +456,24 @@ class LocalLLMPanel:
         else:
             self._window.visible = True
         self._append_message("Auto Alert", self._auto_alert_message(alert, proposal))
+        self._refresh_after_remote_auto_execute(proposal)
         self._request_ui_rebuild()
+
+    def _refresh_after_remote_auto_execute(self, proposal: dict):
+        executions = proposal.get("executions") if isinstance(proposal, dict) else None
+        if not isinstance(executions, list):
+            return
+        applied = sum(1 for item in executions if str(item.get("status") or "").lower() == "applied")
+        if applied <= 0:
+            return
+        callback = self._post_confirm_callback
+        if not callable(callback):
+            return
+        try:
+            callback()
+            self._append_message("Proposal", f"Refreshed Omniverse UI after {applied} remotely auto-executed action(s).")
+        except Exception as exc:
+            self._append_message("API Error", f"Post-auto-execute Omniverse refresh failed: {exc}")
 
     async def _run_once(self):
         prompt = self._model_string(self._prompt_model, "")
@@ -359,6 +505,39 @@ class LocalLLMPanel:
             raise
         except Exception as exc:
             self._proposal_status = f"Proposal refresh failed: {exc}"
+            self._append_message("API Error", self._proposal_status)
+        self._request_ui_rebuild()
+
+    async def _clear_completed_proposals(self):
+        self._proposal_status = "Clearing completed proposal history..."
+        self._request_ui_rebuild()
+        try:
+            result = await asyncio.to_thread(self._proposal_client().clear_completed)
+            deleted = int(result.get("deleted") or 0)
+            executions_deleted = int(result.get("executions_deleted") or 0)
+            self._proposals = [proposal for proposal in self._proposals if str(proposal.get("status") or "") == "pending"]
+            self._proposal_status = f"Deleted {deleted} completed proposal(s) and {executions_deleted} execution log(s). Pending proposals were preserved."
+            self._append_message("Proposal", self._proposal_status)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._proposal_status = f"Clear completed proposals failed: {exc}"
+            self._append_message("API Error", self._proposal_status)
+        self._request_ui_rebuild()
+
+    async def _delete_completed_proposal(self, proposal_id: str):
+        self._proposal_status = f"Deleting completed proposal {proposal_id[:8]}..."
+        self._request_ui_rebuild()
+        try:
+            result = await asyncio.to_thread(self._proposal_client().delete_completed, proposal_id)
+            self._proposals = [proposal for proposal in self._proposals if str(proposal.get("proposal_id") or "") != proposal_id]
+            deleted_status = str(result.get("status") or "completed")
+            self._proposal_status = f"Deleted {deleted_status} proposal {proposal_id[:8]} from backend history."
+            self._append_message("Proposal", self._proposal_status)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._proposal_status = f"Delete proposal failed: {exc}"
             self._append_message("API Error", self._proposal_status)
         self._request_ui_rebuild()
 
@@ -438,13 +617,8 @@ class LocalLLMPanel:
             self._append_message("API Error", f"Error: {exc}")
 
     def _call_lm_studio(self, prompt: str) -> str:
-        client = LMStudioClient(
-            self._model_string(self._server_url_model, "http://127.0.0.1:1234"),
-            model_name=self._model_string(self._model_name_model, self._config("LOCAL_LLM_MODEL_NAME", "")),
-            timeout_s=float(self._config("LOCAL_LLM_TIMEOUT_SECONDS", self._config("LM_STUDIO_TIMEOUT_SECONDS", 120.0))),
-            ollama_native=str(self._config("LOCAL_LLM_PROVIDER", "ollama")).strip().lower() == "ollama",
-            keep_alive=str(self._config("LOCAL_LLM_KEEP_ALIVE", "1h")),
-            num_ctx=int(self._config("LOCAL_LLM_NUM_CTX", 4096) or 4096),
+        client = self._llm_client(
+            timeout_s=float(self._config("LOCAL_LLM_TIMEOUT_SECONDS", self._config("LM_STUDIO_TIMEOUT_SECONDS", 120.0)))
         )
         prompt = self._prompt_with_rag(prompt)
         return client.chat(
@@ -452,6 +626,16 @@ class LocalLLMPanel:
             system_prompt=self._llm_system_prompt(),
             temperature=float(self._config("LOCAL_LLM_TEMPERATURE", self._config("LM_STUDIO_TEMPERATURE", 0.7))),
             max_tokens=int(self._config("LOCAL_LLM_MAX_TOKENS", self._config("LM_STUDIO_MAX_TOKENS", 256))),
+        )
+
+    def _llm_client(self, *, timeout_s: float) -> LMStudioClient:
+        return LMStudioClient(
+            self._model_string(self._server_url_model, "http://127.0.0.1:1234"),
+            model_name=self._model_string(self._model_name_model, self._config("LOCAL_LLM_MODEL_NAME", "")),
+            timeout_s=float(timeout_s),
+            ollama_native=str(self._config("LOCAL_LLM_PROVIDER", "ollama")).strip().lower() == "ollama",
+            keep_alive=str(self._config("LOCAL_LLM_KEEP_ALIVE", "1h")),
+            num_ctx=int(self._config("LOCAL_LLM_NUM_CTX", 4096) or 4096),
         )
 
     def _proposal_client(self) -> AIProposalClient:
@@ -827,7 +1011,8 @@ class LocalLLMPanel:
         )
         return (
             f"Tank {tank} is currently {severity}. Explain why this state is {severity} using the measured value and threshold condition, "
-            f"then propose safe corrective actions that require operator confirmation. Evidence: {reasons}."
+            f"then propose safe executable corrective actions. Because this is warn or critical, do not return empty actions "
+            f"when an allowlisted non-no-op corrective action exists. Evidence: {reasons}."
         )
 
     def _auto_alert_message(self, alert: dict, proposal: dict) -> str:
@@ -848,6 +1033,7 @@ class LocalLLMPanel:
     def _prompt_with_rag(self, prompt: str) -> str:
         context_parts = []
         profile_instruction = self._profile_context_instruction()
+        context_parts.append(self._water_quality_band_context())
         if self._truthy(self._config("LOCAL_LLM_INCLUDE_WQ_DB_CONTEXT", True)):
             context_parts.append(self._water_quality_db_context())
         if not self._truthy(self._config("ENABLE_LOCAL_LLM_RAG", True)):
@@ -892,6 +1078,35 @@ class LocalLLMPanel:
             return text
         except Exception as exc:
             return f"[Aquacast SQLite water-quality context unavailable: {exc}]"
+
+    def _water_quality_band_context(self) -> str:
+        thresholds = self._metric_thresholds()
+        if not thresholds:
+            return "[Aquacast healthy/warn/critical metric bands unavailable]"
+        if self._operator_level() == "beginner":
+            configured = self._config(
+                "WQ_METRICS_DASHBOARD_BEGINNER_METRICS",
+                ["temperature_c", "dissolved_oxygen_mg_l", "tan_mg_l", "nh3_mg_l", "ph", "co2_mg_l", "turbidity_ntu"],
+            )
+        else:
+            configured = list(thresholds.keys())
+        keys = [str(key) for key in configured] if isinstance(configured, (list, tuple, set)) else list(thresholds.keys())
+        lines = [
+            "[Aquacast healthy/warn/critical metric bands]",
+            "These bands are authoritative for deciding whether a value needs action.",
+        ]
+        for key in keys:
+            bands = thresholds.get(key)
+            if not isinstance(bands, dict):
+                continue
+            parts = []
+            for state in ("healthy", "warn", "critical"):
+                text = " or ".join(self._condition_label(condition) for condition in self._conditions_for_state(bands, state))
+                if text:
+                    parts.append(f"{state}={text}")
+            if parts:
+                lines.append(f"- {self._metric_label(key)} ({key}): " + "; ".join(parts))
+        return "\n".join(lines)
 
     def _append_message_once(self, role: str, text: str):
         if any(existing_role == role and existing_text == text for _ts, existing_role, existing_text in self._messages):
